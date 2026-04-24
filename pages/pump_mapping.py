@@ -32,6 +32,7 @@ PUMP_CONFIG = {
 # --- FUNZIONI FISICHE ---
 def pump_physics_model(X, k_hyd, k_leak, k_fric, offset):
     Q_mass, P, mu = X
+    # Modello: I = k_hyd·P·Q + k_leak·P/μ + k_fric·μ·Q + offset
     return (k_hyd * P * Q_mass) + (k_leak * P / mu) + (k_fric * mu * Q_mass) + offset
 
 def get_fluid_props(temp_c, pres_bar):
@@ -50,25 +51,16 @@ layout = dbc.Container([
             html.H4("Parametri Modello", className="mb-3"),
             dbc.Card([
                 dbc.CardBody([
-                    # Sezione Copia Tag (da utils)
                     create_tag_copy_section(PUMP_CONFIG),
-                    
                     html.Hr(),
-                    
                     html.Label("1. Carica dati da archiviazione binaria"),
                     dcc.Upload(
                         id='upload-data',
                         children=html.Div(['Trascina o ', html.A('scegli CSV')]),
-                        style={
-                            'width': '100%', 'height': '60px', 'lineHeight': '60px', 
-                            'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px', 
-                            'textAlign': 'center', 'marginBottom': '15px'
-                        }
+                        style={'width': '100%', 'height': '60px', 'lineHeight': '60px', 'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px', 'textAlign': 'center', 'marginBottom': '15px'}
                     ),
-                    
                     html.Label("2. Soglia Trip Inverter [A]"),
                     dbc.Input(id="trip-limit", type="number", value=30, step=1, className="mb-4"),
-
                     dbc.Button("Genera mappa", id="process-btn", color="danger", className="w-100"),
                 ])
             ], className="shadow-sm"),
@@ -94,8 +86,7 @@ layout = dbc.Container([
     ], className="mt-4")
 ], fluid=True)
 
-# --- CALLBACKS UI (Gestione Tag e Copia Infallibile) ---
-
+# --- CALLBACKS UI ---
 @callback(
     [Output("tag-box", "value"),
      Output("hidden-copy-storage", "data")],
@@ -103,9 +94,7 @@ layout = dbc.Container([
 )
 def update_tag_display(selected_pump):
     tags_dict = PUMP_CONFIG.get(selected_pump, {})
-    # Legenda visibile
     display_text = "\n".join([f"{tag}  <-- {desc}" for tag, desc in tags_dict.items()])
-    # Solo i tag per la copia
     copy_text = "\n".join(tags_dict.keys())
     return display_text, copy_text
 
@@ -125,7 +114,7 @@ dash.clientside_callback(
     prevent_initial_call=True
 )
 
-# --- CALLBACK PRINCIPALE (Fisica e Plot) ---
+# --- CALLBACK PRINCIPALE ---
 @callback(
     [Output('trip-map-plot', 'figure'),
      Output('status-message', 'children'),
@@ -147,9 +136,9 @@ def update_graph(n_clicks, contents, trip_limit):
         
         required_cols = ['time', 'oil_temp', 'pump_massflow', 'pressure_jump', 'pump_current']
         if not all(c in df.columns for c in required_cols):
-            return go.Figure(), dbc.Alert("Errore: colonne mancanti.", color="danger"), ""
+            return go.Figure(), dbc.Alert("Errore: colonne mancanti nel CSV.", color="danger"), ""
 
-        # Calcoli Fisici
+        # Fitting del modello
         df['mu'] = df.apply(lambda row: get_fluid_props(row['oil_temp'], row['pressure_jump']), axis=1)
         X_data = (df['pump_massflow'].values, df['pressure_jump'].values, df['mu'].values)
         I_measured = df['pump_current'].values
@@ -158,7 +147,16 @@ def update_graph(n_clicks, contents, trip_limit):
         k_hyd, k_leak, k_fric, offset = popt
         r2_val = r2_score(I_measured, pump_physics_model(X_data, *popt))
 
-        # Creazione Mappa
+        # --- ANALISI AFFIDABILITÀ ---
+        warnings = []
+        if offset > 15:
+            warnings.append(html.Li("🚩 OFFSET ELEVATO: Assorbimento a vuoto stimato >15A. Possibili attriti fissi o dati mancanti a basso carico.", style={"color": "#d9534f"}))
+        if k_leak < 1e-10 or k_fric < 1e-10:
+            warnings.append(html.Li("🚩 COEFFICIENTI DEBOLI: I termini viscosi/perdite sono quasi nulli. Il modello è ipersemplificato.", style={"color": "#f0ad4e"}))
+        if r2_val < 0.85:
+            warnings.append(html.Li(f"🚩 FIT INCERTO (R²={r2_val:.2f}): Scostamento elevato tra modello e realtà.", style={"color": "#d9534f"}))
+
+        # Generazione Mappa
         p_max, m_max = df['pressure_jump'].max() * 1.2, df['pump_massflow'].max() * 1.1
         m_range, p_range = np.linspace(0, m_max, 50), np.linspace(0, p_max, 50)
         M_GRID, P_GRID = np.meshgrid(m_range, p_range)
@@ -170,62 +168,44 @@ def update_graph(n_clicks, contents, trip_limit):
             for j in range(len(m_range)):
                 I_EXTRAP[i, j] = pump_physics_model((m_range[j], p_range[i], mu), *popt)
 
-        # Plotly Figure
         fig = go.Figure()
         fig.add_trace(go.Contour(
             z=I_EXTRAP, x=m_range, y=p_range, colorscale='Viridis', 
-            colorbar=dict(title="Corrente [A]"),
-            hovertemplate="Portata: %{x:.1f} [g/s]<br>Pressione: %{y:.1f} [bar]<br>Corrente: %{z:.1f} [A]<extra></extra>"
+            colorbar=dict(title="Corrente [A]")
         ))
         fig.add_trace(go.Contour(
             z=I_EXTRAP, x=m_range, y=p_range, showscale=False, 
             contours=dict(start=trip_limit, end=trip_limit, coloring='none'), 
-            line=dict(color='red', width=4), name="Soglia Trip"
+            line=dict(color='red', width=4), name=f"Soglia Trip ({trip_limit}A)"
         ))
         fig.add_trace(go.Scatter(
             x=df['pump_massflow'], y=df['pressure_jump'], mode='markers', 
             marker=dict(color='white', size=5, opacity=0.6, line=dict(color='black', width=1)),
-            text=df['time'], name='Dati Reali'
+            name='Punti Misurati'
         ))
 
         fig.update_layout(
-            xaxis_title="Portata Massa [g/s]",
-            yaxis_title="Salto di Pressione [bar]",
+            xaxis_title="Portata Massa [g/s]", yaxis_title="Salto di Pressione [bar]",
             template="plotly_white",
-            # Spostiamo la legenda per evitare che finisca sotto la colorbar
-            showlegend=True,
-            legend=dict(
-                yanchor="top",
-                y=0.98,
-                xanchor="left",
-                x=0.02,
-                bgcolor="rgba(255, 255, 255, 0.7)", # Sfondo semi-trasparente per leggibilità
-                bordercolor="Black",
-                borderwidth=1
-            ),
-            # Margini per assicurarsi che la colorbar abbia spazio
-            margin=dict(l=50, r=50, t=50, b=50)
+            legend=dict(yanchor="top", y=0.98, xanchor="left", x=0.02, bgcolor="rgba(255, 255, 255, 0.7)")
         )
 
-        # Debug Info Formattato
         debug_content = html.Div([
-            html.B("STATISTICHE DATI:"),
+            html.B("MODELLO RISULTANTI:"),
             html.Ul([
-                html.Li(f"Righe caricate: {len(df)}"),
-                html.Li(f"Intervallo: {df['time'].iloc[0]} >> {df['time'].iloc[-1]}"),
-                html.Li(f"Portata: {df['pump_massflow'].min():.1f} / {df['pump_massflow'].max():.1f} [g/s]"),
-                html.Li(f"Pressione: {df['pressure_jump'].min():.1f} / {df['pressure_jump'].max():.1f} [bar]"),
-            ]),
-            html.B("MODELLO FISICO:"),
-            html.P("I = k_hyd·P·Q + k_leak·P/μ + k_fric·μ·Q + off", style={"fontSize": "0.75rem"}),
-            html.Ul([
-                html.Li(f"k_hyd: {k_hyd:.2e}"), html.Li(f"k_leak: {k_leak:.2e}"),
-                html.Li(f"k_fric: {k_fric:.2e}"), html.Li(f"Offset: {offset:.3f} [A]"),
+                html.Li(f"k_hyd: {k_hyd:.2e}"),
+                html.Li(f"k_leak: {k_leak:.2e}"),
+                html.Li(f"k_fric: {k_fric:.2e}"),
+                html.Li(f"Offset: {offset:.2f} [A]"),
                 html.Li(f"R² Fit: {r2_val:.4f}"),
-            ])
+            ]),
+            html.Div([
+                html.B("ANALISI TECNICA:"),
+                html.Ul(warnings if warnings else [html.Li("✅ Modello coerente con i dati.", style={"color": "green"})])
+            ], style={"marginTop": "10px", "borderTop": "1px solid #ddd", "paddingTop": "10px"})
         ])
 
-        return fig, dbc.Alert("Mappa generata senza errori", color="success"), debug_content
+        return fig, dbc.Alert("Mappa aggiornata", color="success"), debug_content
 
     except Exception as e:
-        return go.Figure(), dbc.Alert(f"Errore tecnico: {str(e)}", color="danger"), html.P("Errore.")
+        return go.Figure(), dbc.Alert(f"Errore: {str(e)}", color="danger"), html.P("Errore calcolo.")
