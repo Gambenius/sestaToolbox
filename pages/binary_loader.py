@@ -130,6 +130,7 @@ def get_wbin_metadata(path):
 layout = dbc.Container([
     dcc.Store(id='wbin-config-store'),
     dcc.Store(id='wbin-zoom-store', data={'start': 0, 'end': None}),
+    dcc.Download(id="download-csv"), 
     dbc.Row([
         # Sidebar
         dbc.Col([
@@ -176,7 +177,16 @@ layout = dbc.Container([
                 type="default"
             )
         ], width=9)
-    ], className="mt-3")
+    ], className="mt-3"),
+    dbc.Row([
+            html.Div([
+                html.H4("Esportazione CSV", className="text-primary mb-4"),
+                dbc.Input(id='start-timecut', placeholder="Start HH:MM:SS", type="text", className="mb-2"),
+                dbc.Input(id='end-timecut', placeholder="End HH:MM:SS", type="text", className="mb-4"),
+                dbc.Button("Esporta selezione come CSV", id='save-csv-btn', color="success", className="w-100 mb-3"),
+                html.Div(id="csv-status-msg", className="small")
+            ], style={'padding': '20px', 'borderTop': '1px solid #ddd'})
+        ], className="mt-3")
 ], fluid=True, style={'backgroundColor': '#f8f9fa', 'minHeight': '100vh'})
 
 # ─────────────────────────────────────────────────────────────────
@@ -564,54 +574,138 @@ def apply_preset(preset_name, cfg, current_options):
                 })
             
     return new_selection_ids, new_options
-    if not preset_name or not cfg:
-        return no_update
+
+
+# --- GESTIONE CSV E ESPORTAZIONE
+def time_to_seconds(t_str):
+    """Converte HH:MM:SS in secondi totali."""
+    try:
+        # Rimuove tutto ciò che non è numero o :
+        t_str = re.sub(r'[^0-9:]', '', t_str)
+        h, m, s = map(int, t_str.split(':'))
+        return h * 3600 + m * 60 + s
+    except:
+        return None
+
+# --- CALLBACK 1: SINCRONIZZAZIONE ZOOM -> INPUT TESTO ---
+@callback(
+    [Output('start-timecut', 'value'),
+     Output('end-timecut', 'value')],
+    Input('wbin-main-graph', 'relayoutData'),
+    State('wbin-main-graph', 'figure'),
+    prevent_initial_call=True
+)
+def sync_times_with_zoom(relayout_data, fig):
+    if not fig or not fig['data']: return no_update, no_update
     
-    presets = load_presets_from_file()
-    selected_tagnames = presets.get(preset_name, [])
-    
-    # Traduciamo i nomi reali (CA004.PV) in ID tecnici (A_5184)
-    new_selection = []
-    for tagname in selected_tagnames:
-        sid = get_sid_from_tagname(tagname, cfg)
-        if sid:
-            new_selection.append(sid)
-            
-    return new_selection
-    """Carica i tag del preset selezionato nel grafico."""
-    if not preset_name:
-        return no_update
-    
-    presets = load_presets_from_file()
-    selected_tags = presets.get(preset_name, [])
-    
-    # Restituisce direttamente la lista dei tag caricati (es. ["A_10", "D_5"])
-    return selected_tags    
-    if not os.path.exists(PRESETS_FILE):
-        return {}
-    
-    presets = {}
-    with open(PRESETS_FILE, "r") as f:
-        lines = f.readlines()
+    # Se l'utente resetta lo zoom o fa l'autorange
+    if not relayout_data or 'xaxis.autorange' in relayout_data:
+        # Prende il primo e l'ultimo punto visibile nella traccia 0
+        first_time = fig['data'][0]['text'][0]
+        last_time = fig['data'][0]['text'][-1]
+        return first_time, last_time
+
+    # Se l'utente ha zoomato, Plotly restituisce gli indici degli assi
+    if 'xaxis.range[0]' in relayout_data:
+        idx_start = int(float(relayout_data['xaxis.range[0]']))
+        idx_end = int(float(relayout_data['xaxis.range[1]']))
         
-    current_title = None
-    current_tags = []
-    in_block = False
-    
-    for line in lines:
-        line = line.strip()
-        if not line: continue
+        # Troviamo i tempi corrispondenti agli indici negli array della figura
+        # Cerchiamo il tempo più vicino agli indici zoomati
+        times = fig['data'][0]['text']
+        x_vals = fig['data'][0]['x']
         
-        if line.startswith("{"):
-            in_block = True
-        elif line.startswith("}"):
-            if current_title:
-                presets[current_title] = current_tags
-            current_tags = []
-            in_block = False
-        elif in_block:
-            current_tags.append(line)
-        else:
-            current_title = line
+        # Mapping semplice per trovare i tempi reali visibili
+        t_start = times[0] # Fallback
+        t_end = times[-1]
+        
+        # Cerchiamo i tempi corretti scorrendo gli indici x
+        for i, val in enumerate(x_vals):
+            if val >= idx_start:
+                t_start = times[i]
+                break
+        for i, val in reversed(list(enumerate(x_vals))):
+            if val <= idx_end:
+                t_end = times[i]
+                break
+        return t_start, t_end
+
+    return no_update, no_update
+
+
+# --- CALLBACK 2: GENERAZIONE E DOWNLOAD CSV ---
+@callback(
+    [Output("download-csv", "data"),
+     Output("csv-status-msg", "children")],
+    Input("save-csv-btn", "n_clicks"),
+    [State('start-timecut', 'value'),
+     State('end-timecut', 'value'),
+     State('wbin-tag-dropdown', 'value'),
+     State('wbin-config-store', 'data')],
+    prevent_initial_call=True
+)
+def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
+    if not n_clicks or not selected_sids or not cfg:
+        return no_update, "Carica un file e seleziona canali."
+
+    # 1. Validazione Orari
+    s_sec = time_to_seconds(t_start_raw)
+    e_sec = time_to_seconds(t_end_raw)
+    
+    if s_sec is None or e_sec is None:
+        return no_update, dbc.Alert("Formato HH:MM:SS non valido!", color="warning")
+    if s_sec >= e_sec:
+        return no_update, dbc.Alert("Start deve essere prima di End!", color="danger")
+
+    # 2. Estrazione Integrale (Tutti i punti nel range)
+    # Prepariamo le colonne del CSV
+    headers = ["Time"] + [get_tagname_from_sid(sid, cfg) for sid in selected_sids]
+    rows = []
+
+    with open(cfg['path'], 'rb') as f:
+        for b_idx in range(cfg['total_blocks']):
+            f.seek(cfg['data_offset'] + (b_idx * cfg['block_size']))
+            record = f.read(cfg['block_size'])
+            if len(record) < cfg['block_size']: break
             
-    return presets
+            # Orario del blocco corrente (Byte 4, 5, 6)
+            h, m, s = record[4], record[5], record[6]
+            curr_sec = h * 3600 + m * 60 + s
+            
+            # Filtro temporale
+            if curr_sec < s_sec: continue
+            if curr_sec > e_sec: break
+            
+            row = [f"{h:02d}:{m:02d}:{s:02d}"]
+            
+            for sid in selected_sids:
+                v_type, v_idx = sid.split('_')
+                idx = int(v_idx)
+                if v_type == 'A':
+                    offset = 13 + (idx * 4)
+                    val = struct.unpack('>f', record[offset:offset+4])[0]
+                    row.append(val)
+                else:
+                    ch = cfg['digital_channels'][idx]
+                    dig_base = 13 + (cfg['n_analog'] * 4)
+                    group_offset = dig_base + (ch['group'] * 4)
+                    full_word = struct.unpack('<I', record[group_offset : group_offset+4])[0]
+                    row.append((full_word >> ch['bit']) & 1)
+            rows.append(row)
+
+    if not rows:
+        return no_update, "Nessun dato trovato nel range."
+
+    # 3. Creazione DataFrame e Invio
+    df = pd.DataFrame(rows, columns=headers)
+    return dcc.send_data_frame(df.to_csv, "export_data.csv", index=False), f"Esportati {len(rows)} record."
+
+
+
+
+
+
+
+
+
+
