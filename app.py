@@ -6,7 +6,7 @@ from dash import html, dcc
 app = dash.Dash(
     __name__, 
     use_pages=True, 
-    external_stylesheets=[dbc.themes.FLATLY] 
+    external_stylesheets=[dbc.themes.ZEPHYR] 
 )
 
 # Define the sidebar style

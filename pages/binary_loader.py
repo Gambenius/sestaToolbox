@@ -111,7 +111,19 @@ def get_wbin_metadata(path):
     block_size = 13 + (n_analog * 4) + (n_uint32 * 4)
 
     total_blocks = (os.path.getsize(path) - data_offset) // block_size
+    file_size = os.path.getsize(path)
 
+    # 4. Estrazione orari dal binario
+    with open(path, 'rb') as f:
+        # Orario d'inizio
+        f.seek(data_offset)
+        s_rec = f.read(7)
+        t_start = f"{s_rec[4]:02d}:{s_rec[5]:02d}:{s_rec[6]:02d}"
+        
+        # Orario di fine (Usa file_size e block_size appena definiti)
+        f.seek(file_size - block_size)
+        e_rec = f.read(7)
+        t_end = f"{e_rec[4]:02d}:{e_rec[5]:02d}:{e_rec[6]:02d}"
     return {
         'path': path,
         'data_offset': data_offset,
@@ -120,7 +132,9 @@ def get_wbin_metadata(path):
         'n_analog': n_analog,
         'analog_channels': analog_channels,
         'digital_channels': digital_channels,
-        'meta': campaign_info
+        'meta': campaign_info,
+        'start_time': t_start,
+        'end_time': t_end,
     }
 
 # ─────────────────────────────────────────────────────────────────
@@ -143,7 +157,7 @@ layout = dbc.Container([
                 html.Div(id="wbin-file-info", children=[
                     dbc.Card([
                         dbc.CardBody([
-                            html.P("Carica un file...", className="text-muted small mb-0")
+                            html.P("Carica un file prima :)", className="text-muted small mb-0")
                         ])
                     ], className="bg-light")
                 ], className="mb-3"),
@@ -166,7 +180,25 @@ layout = dbc.Container([
 
                 dbc.Input(id='new-preset-name', placeholder="Nome nuovo preset...", type="text", className="mb-4"),
 
-                dbc.Button("Salva selezione corrente", id='save-preset-btn', color="success",className="w-100 mb-3")
+                dbc.Button("Salva selezione corrente", id='save-preset-btn', color="primary",className="w-100 mb-3"),
+                html.Div([
+                    html.H4("Esportazione CSV", className="text-primary mb-4"),
+                    
+                    # Riga per gli input affiancati
+                    dbc.Row([
+                        dbc.Col([
+                            dbc.Input(id='start-timecut', placeholder="HH:MM:SS", type="text")
+                        ], width=5),
+                        dbc.Col([
+                            html.Span("-", className="fw-bold")
+                        ], width=2, className="text-center d-flex align-items-center justify-content-center"),
+                        dbc.Col([
+                            dbc.Input(id='end-timecut', placeholder="HH:MM:SS", type="text")
+                        ], width=5),
+                    ], className="mb-4 g-0"), # g-0 rimuove lo spazio eccessivo tra le colonne (gutter)
+                    dbc.Button("Esporta selezione come CSV", id='save-csv-btn', color="primary", className="w-100 mb-3"),
+                    html.Div(id="csv-status-msg", className="small")
+                ], style={'padding': '0px', 'borderTop': '1px solid #ddd'})
             ], style={'padding': '20px', 'borderRight': '1px solid #ddd', 'minHeight': '90vh'})
         ], width=3),
         
@@ -177,16 +209,16 @@ layout = dbc.Container([
                 type="default"
             )
         ], width=9)
-    ], className="mt-3"),
-    dbc.Row([
-            html.Div([
-                html.H4("Esportazione CSV", className="text-primary mb-4"),
-                dbc.Input(id='start-timecut', placeholder="Start HH:MM:SS", type="text", className="mb-2"),
-                dbc.Input(id='end-timecut', placeholder="End HH:MM:SS", type="text", className="mb-4"),
-                dbc.Button("Esporta selezione come CSV", id='save-csv-btn', color="success", className="w-100 mb-3"),
-                html.Div(id="csv-status-msg", className="small")
-            ], style={'padding': '20px', 'borderTop': '1px solid #ddd'})
-        ], className="mt-3")
+    ], className="mt-3")
+    # dbc.Row([
+    #         html.Div([
+    #             html.H4("Esportazione CSV", className="text-primary mb-4"),
+    #             dbc.Input(id='start-timecut', placeholder="Start HH:MM:SS", type="text", className="mb-2"),
+    #             dbc.Input(id='end-timecut', placeholder="End HH:MM:SS", type="text", className="mb-4"),
+    #             dbc.Button("Esporta selezione come CSV", id='save-csv-btn', color="success", className="w-100 mb-3"),
+    #             html.Div(id="csv-status-msg", className="small")
+    #         ], style={'padding': '20px', 'borderTop': '1px solid #ddd'})
+    #     ], className="mt-3")
 ], fluid=True, style={'backgroundColor': '#f8f9fa', 'minHeight': '100vh'})
 
 # ─────────────────────────────────────────────────────────────────
@@ -403,7 +435,7 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
     # Aggiornamento assi con Tick Temporali
     tick_indices = np.linspace(0, len(time_axis)-1, 10).astype(int)
     fig.update_layout(
-        template="plotly_white", margin=dict(l=20, r=20, t=30, b=80),
+        template="seaborn", margin=dict(l=20, r=20, t=30, b=80),
         hovermode="x unified", uirevision='constant',
         xaxis=dict(
             title="Orario", tickmode='array',
@@ -413,7 +445,6 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
         )
     )
     return fig
-
 
 @callback(
     Output('wbin-zoom-store', 'data'),
@@ -588,51 +619,50 @@ def time_to_seconds(t_str):
         return None
 
 # --- CALLBACK 1: SINCRONIZZAZIONE ZOOM -> INPUT TESTO ---
+# 1. IL SINCRONIZZATORE (Sostituisce i precedenti sync_...)
 @callback(
     [Output('start-timecut', 'value'),
      Output('end-timecut', 'value')],
-    Input('wbin-main-graph', 'relayoutData'),
-    State('wbin-main-graph', 'figure'),
+    [Input('wbin-config-store', 'data'),
+     Input('wbin-main-graph', 'relayoutData')],
+    [State('wbin-main-graph', 'figure')],
     prevent_initial_call=True
 )
-def sync_times_with_zoom(relayout_data, fig):
-    if not fig or not fig['data']: return no_update, no_update
+def sync_export_range(cfg, relayout_data, fig):
+    ctx = dash.callback_context
+    if not ctx.triggered: return no_update, no_update
     
-    # Se l'utente resetta lo zoom o fa l'autorange
-    if not relayout_data or 'xaxis.autorange' in relayout_data:
-        # Prende il primo e l'ultimo punto visibile nella traccia 0
-        first_time = fig['data'][0]['text'][0]
-        last_time = fig['data'][0]['text'][-1]
-        return first_time, last_time
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0]
 
-    # Se l'utente ha zoomato, Plotly restituisce gli indici degli assi
-    if 'xaxis.range[0]' in relayout_data:
-        idx_start = int(float(relayout_data['xaxis.range[0]']))
-        idx_end = int(float(relayout_data['xaxis.range[1]']))
+    # SE CARICHI UN NUOVO FILE
+    if trigger_id == 'wbin-config-store' and cfg:
+        return cfg.get('start_time', ''), cfg.get('end_time', '')
+
+    # SE INTERAGISCI COL GRAFICO
+    if trigger_id == 'wbin-main-graph' and relayout_data:
+        # TASTO HOME O RESET
+        if 'xaxis.autorange' in relayout_data or 'autosize' in relayout_data:
+            if cfg:
+                return cfg.get('start_time', ''), cfg.get('end_time', '')
         
-        # Troviamo i tempi corrispondenti agli indici negli array della figura
-        # Cerchiamo il tempo più vicino agli indici zoomati
-        times = fig['data'][0]['text']
-        x_vals = fig['data'][0]['x']
-        
-        # Mapping semplice per trovare i tempi reali visibili
-        t_start = times[0] # Fallback
-        t_end = times[-1]
-        
-        # Cerchiamo i tempi corretti scorrendo gli indici x
-        for i, val in enumerate(x_vals):
-            if val >= idx_start:
-                t_start = times[i]
-                break
-        for i, val in reversed(list(enumerate(x_vals))):
-            if val <= idx_end:
-                t_end = times[i]
-                break
-        return t_start, t_end
+        # ZOOM MANUALE
+        if 'xaxis.range[0]' in relayout_data and fig and fig['data']:
+            try:
+                idx_start = int(float(relayout_data['xaxis.range[0]']))
+                idx_end = int(float(relayout_data['xaxis.range[1]']))
+                
+                times = fig['data'][0].get('text', [])
+                x_axis = fig['data'][0].get('x', [])
+                
+                if not times: return no_update, no_update
+                
+                t_s = next((times[i] for i, v in enumerate(x_axis) if v >= idx_start), times[0])
+                t_e = next((times[i] for i, v in reversed(list(enumerate(x_axis))) if v <= idx_end), times[-1])
+                return t_s, t_e
+            except:
+                return no_update, no_update
 
     return no_update, no_update
-
-
 # --- CALLBACK 2: GENERAZIONE E DOWNLOAD CSV ---
 @callback(
     [Output("download-csv", "data"),
