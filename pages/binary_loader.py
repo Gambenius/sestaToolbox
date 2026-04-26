@@ -159,7 +159,13 @@ layout = dbc.Container([
                 ),
                 dbc.Button("Mostra grafico", id="wbin-btn-plot", color="primary", className="w-100 mb-3"),
                 
-                html.Div(id="wbin-status-msg")
+                html.Div(id="wbin-status-msg"),
+
+                dcc.Dropdown(id='preset-dropdown', placeholder="Seleziona un Preset...", className="mb-4"   ),
+
+                dbc.Input(id='new-preset-name', placeholder="Nome nuovo preset...", type="text", className="mb-4"),
+
+                dbc.Button("Salva selezione corrente", id='save-preset-btn', color="success",className="w-100 mb-3")
             ], style={'padding': '20px', 'borderRight': '1px solid #ddd', 'minHeight': '90vh'})
         ], width=3),
         
@@ -421,3 +427,191 @@ def update_zoom_limits(relayout_data, cfg):
         return no_update # Gestiremo lo zoom direttamente nella callback di plot
     
     return no_update
+
+# ─────────────────────────────────────────────────────────────────
+# 4. GESTIONE PRESET (Salvataggio su File e Caricamento)
+# ─────────────────────────────────────────────────────────────────
+
+PRESETS_FILE = "utils/binrev_presets.txt"
+
+def save_preset_to_file(title, tags):
+    """Salva i tag nel formato richiesto."""
+    with open(PRESETS_FILE, "a") as f:
+        f.write(f"{title.upper()}\n{{\n")
+        for tag in tags:
+            f.write(f"{tag}\n")
+        f.write("}\n")
+
+def load_presets_from_file():
+    """Carica i preset dal file di testo."""
+    if not os.path.exists(PRESETS_FILE):
+        return {}
+    
+    presets = {}
+    with open(PRESETS_FILE, "r") as f:
+        lines = f.readlines()
+        
+    current_title = None
+    current_tags = []
+    in_block = False
+    
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        if line.startswith("{"):
+            in_block = True
+        elif line.startswith("}"):
+            if current_title:
+                presets[current_title] = current_tags
+            current_tags = []
+            in_block = False
+        elif in_block:
+            current_tags.append(line)
+        else:
+            current_title = line
+    return presets
+
+def get_sid_from_tagname(tagname, cfg):
+    """Trova l'ID (A_x o D_x) partendo dal nome del tag."""
+    tagname = tagname.strip().upper()
+    # Cerca tra gli analogici
+    for i, ch in enumerate(cfg.get('analog_channels', [])):
+        if ch['tag'].upper() == tagname:
+            return f"A_{i}"
+    # Cerca tra i digitali
+    for i, ch in enumerate(cfg.get('digital_channels', [])):
+        if ch['tag'].upper() == tagname:
+            return f"D_{i}"
+    return None
+
+def get_tagname_from_sid(sid, cfg):
+    """Trova il nome del tag partendo dall'ID (A_x o D_x)."""
+    try:
+        v_type, v_idx = sid.split('_')
+        idx = int(v_idx)
+        if v_type == 'A':
+            return cfg['analog_channels'][idx]['tag']
+        else:
+            return cfg['digital_channels'][idx]['tag']
+    except:
+        return None
+# --- CALLBACKS PRESET ---
+
+# --- CALLBACK 1: AGGIORNA IL MENU DEI PRESET APPENA SALVI ---
+@callback(
+    Output('preset-dropdown', 'options'),
+    [Input('save-preset-btn', 'n_clicks'),
+     Input('wbin-config-store', 'data')], # Si aggiorna anche quando carichi un nuovo file
+    prevent_initial_call=False
+)
+def update_preset_dropdown(n, cfg):
+    presets = load_presets_from_file()
+    return [{'label': k, 'value': k} for k in presets.keys()]
+
+# --- CALLBACK 2: SALVA E TRADUCI ---
+@callback(
+    Output('new-preset-name', 'value'),
+    Input('save-preset-btn', 'n_clicks'),
+    State('new-preset-name', 'value'),
+    State('wbin-tag-dropdown', 'value'),
+    State('wbin-config-store', 'data'),
+    prevent_initial_call=True
+)
+def save_current_selection(n_clicks, name, current_selection, cfg):
+    if not n_clicks or not name or not current_selection or not cfg:
+        return no_update
+    
+    human_tags = []
+    for sid in current_selection:
+        tag_name = get_tagname_from_sid(sid, cfg)
+        if tag_name:
+            human_tags.append(tag_name)
+    
+    save_preset_to_file(name, human_tags)
+    return "" 
+
+# --- CALLBACK 3: APPLICA IL PRESET E FORZA LE OPZIONI ---
+@callback(
+    [Output('wbin-tag-dropdown', 'value'),
+     Output('wbin-tag-dropdown', 'options', allow_duplicate=True)], # IMPORTANTE: allow_duplicate
+    Input('preset-dropdown', 'value'),
+    [State('wbin-config-store', 'data'),
+     State('wbin-tag-dropdown', 'options')],
+    prevent_initial_call=True
+)
+def apply_preset(preset_name, cfg, current_options):
+    if not preset_name or not cfg:
+        return no_update, no_update
+    
+    presets = load_presets_from_file()
+    selected_tagnames = presets.get(preset_name, [])
+    
+    new_selection_ids = []
+    new_options = list(current_options) if current_options else []
+    existing_ids = [o['value'] for o in new_options]
+    
+    for tagname in selected_tagnames:
+        sid = get_sid_from_tagname(tagname, cfg)
+        if sid:
+            new_selection_ids.append(sid)
+            # Se l'ID non è tra le opzioni correnti, dobbiamo aggiungerlo 
+            # altrimenti il dropdown non lo mostrerà/selezionerà
+            if sid not in existing_ids:
+                new_options.append({
+                    'label': f"{tagname} (da preset)", 
+                    'value': sid
+                })
+            
+    return new_selection_ids, new_options
+    if not preset_name or not cfg:
+        return no_update
+    
+    presets = load_presets_from_file()
+    selected_tagnames = presets.get(preset_name, [])
+    
+    # Traduciamo i nomi reali (CA004.PV) in ID tecnici (A_5184)
+    new_selection = []
+    for tagname in selected_tagnames:
+        sid = get_sid_from_tagname(tagname, cfg)
+        if sid:
+            new_selection.append(sid)
+            
+    return new_selection
+    """Carica i tag del preset selezionato nel grafico."""
+    if not preset_name:
+        return no_update
+    
+    presets = load_presets_from_file()
+    selected_tags = presets.get(preset_name, [])
+    
+    # Restituisce direttamente la lista dei tag caricati (es. ["A_10", "D_5"])
+    return selected_tags    
+    if not os.path.exists(PRESETS_FILE):
+        return {}
+    
+    presets = {}
+    with open(PRESETS_FILE, "r") as f:
+        lines = f.readlines()
+        
+    current_title = None
+    current_tags = []
+    in_block = False
+    
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        
+        if line.startswith("{"):
+            in_block = True
+        elif line.startswith("}"):
+            if current_title:
+                presets[current_title] = current_tags
+            current_tags = []
+            in_block = False
+        elif in_block:
+            current_tags.append(line)
+        else:
+            current_title = line
+            
+    return presets
