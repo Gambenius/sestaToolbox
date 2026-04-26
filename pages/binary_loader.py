@@ -4,10 +4,9 @@ import pandas as pd
 import plotly.graph_objects as go
 import tkinter as tk
 from tkinter import filedialog
-import fnmatch # Aggiungi questo import in cima al file
 
 import dash
-from dash import html, dcc, callback, Input, Output, State, no_update
+from dash import html, dcc, dash_table, callback, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
 
 # Registrazione della pagina
@@ -207,23 +206,96 @@ layout = dbc.Container([
             dcc.Loading(
                 dcc.Graph(id='wbin-main-graph', style={'height': '85vh'}),
                 type="default"
+            ),
+            dash_table.DataTable(
+                id='wbin-info-table',
+                columns=[
+                    {"name": "X", "id": "delete-row", "editable": False}, # Colonna cestino
+                    {"name": "Tag", "id": "tag", "editable": False},
+                    {"name": "Descrizione", "id": "desc", "editable": False},
+                    {"name": "Colore", "id": "color", "presentation": "dropdown"},
+                    {"name": "Valore al Cursore", "id": "cur_val", "editable": False}
+                ],
+                data=[],
+                editable=True,
+                dropdown={
+                    'color': {
+                        'options': [
+                            {'label': '🔵 Blu', 'value': '#4C78A8'},
+                            {'label': '🔴 Rosso', 'value': '#E15759'},
+                            {'label': '🟢 Verde', 'value': '#59A14F'},
+                            {'label': '🟠 Arancio', 'value': '#EDC948'},
+                            {'label': '🟣 Viola', 'value': '#B07AA1'},
+                            {'label': '⚫ Nero', 'value': '#333333'}
+                        ]
+                    }
+                },
+                # Stile Light Mode
+                style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'border': '1px solid #dee2e6'},
+                style_data={'backgroundColor': 'white', 'border': '1px solid #dee2e6'},
+                style_cell={'textAlign': 'left', 'padding': '10px', 'fontFamily': 'sans-serif'},
+                style_data_conditional=[
+                    {'if': {'column_id': 'delete-row'}, 'cursor': 'pointer', 'textAlign': 'center', 'color': 'red', 'fontWeight': 'bold'},
+                    {'if': {'column_id': 'cur_val'}, 'color': 'black', 'fontWeight': 'normal'} # Testo nero regular
+                ]
             )
         ], width=9)
     ], className="mt-3")
-    # dbc.Row([
-    #         html.Div([
-    #             html.H4("Esportazione CSV", className="text-primary mb-4"),
-    #             dbc.Input(id='start-timecut', placeholder="Start HH:MM:SS", type="text", className="mb-2"),
-    #             dbc.Input(id='end-timecut', placeholder="End HH:MM:SS", type="text", className="mb-4"),
-    #             dbc.Button("Esporta selezione come CSV", id='save-csv-btn', color="success", className="w-100 mb-3"),
-    #             html.Div(id="csv-status-msg", className="small")
-    #         ], style={'padding': '20px', 'borderTop': '1px solid #ddd'})
-    #     ], className="mt-3")
 ], fluid=True, style={'backgroundColor': '#f8f9fa', 'minHeight': '100vh'})
 
 # ─────────────────────────────────────────────────────────────────
 # 3. CALLBACKS
 # ─────────────────────────────────────────────────────────────────
+@callback(
+    [Output('wbin-info-table', 'data', allow_duplicate=True),
+     Output('wbin-main-graph', 'figure', allow_duplicate=True),
+     Output('wbin-tag-dropdown', 'value', allow_duplicate=True),
+     Output('wbin-info-table', 'active_cell')], # Aggiunto per resettare il click
+    [Input('wbin-info-table', 'active_cell'),
+     Input('wbin-info-table', 'data')],
+    [State('wbin-info-table', 'data'),
+     State('wbin-main-graph', 'figure'),
+     State('wbin-tag-dropdown', 'value'),
+     State('wbin-config-store', 'data')],
+    prevent_initial_call=True
+)
+def handle_table_interactions(active_cell, table_data, current_rows, fig, current_tags, cfg):
+    ctx = dash.callback_context
+    if not ctx.triggered: return no_update, no_update, no_update, no_update
+    
+    trigger_id = ctx.triggered[0]['prop_id']
+
+    # --- ELIMINAZIONE RIGA ---
+    if "active_cell" in trigger_id and active_cell:
+        if active_cell['column_id'] == 'delete-row':
+            row_idx = active_cell['row']
+            tag_to_remove = current_rows[row_idx]['tag']
+            
+            # Rimuovi dalla tabella
+            new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
+            
+            # Rimuovi dal grafico
+            fig['data'] = [t for t in fig['data'] if tag_to_remove not in t['name']]
+            
+            # Sincronizza Dropdown
+            new_tags = []
+            for sid in current_tags:
+                if get_tagname_from_sid(sid, cfg) != tag_to_remove:
+                    new_tags.append(sid)
+            
+            # Restituiamo None all'active_cell per "deselezionare" visivamente
+            return new_table, fig, new_tags, None
+
+    # --- CAMBIO COLORE ---
+    if "data" in trigger_id:
+        for row in table_data:
+            tag = row['tag']
+            for trace in fig['data']:
+                if tag in trace['name']:
+                    trace['line']['color'] = row['color']
+        return table_data, fig, no_update, no_update
+
+    return no_update, no_update, no_update, no_update
 
 @callback(
     [Output('wbin-config-store', 'data'), 
@@ -348,20 +420,28 @@ def cb_filter_tags(search, selected_values, cfg):
             
     return final_options
 
+# ─────────────────────────────────────────────────────────────────
+# CALLBACK PRINCIPALE: RENDER GRAFICO + INIZIALIZZAZIONE TABELLA
+# ─────────────────────────────────────────────────────────────────
+
 @callback(
-    Output('wbin-main-graph', 'figure'),
+    [Output('wbin-main-graph', 'figure'),
+     Output('wbin-info-table', 'data')], 
     [Input('wbin-btn-plot', 'n_clicks'),
      Input('wbin-main-graph', 'relayoutData')],
     [State('wbin-tag-dropdown', 'value'), 
      State('wbin-config-store', 'data')],
     prevent_initial_call=True
 )
+
 def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
-    if not selected_indices or not cfg: return no_update
+    if not selected_indices or not cfg: 
+        return no_update, []
     
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id'].split('.')[1]
 
+    # Gestione Range blocchi
     start_block = 0
     end_block = cfg['total_blocks'] - 1
 
@@ -372,9 +452,10 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
         elif 'xaxis.autorange' in relayout_data:
             start_block = 0
             end_block = cfg['total_blocks'] - 1
-        else: return no_update
+        else: 
+            return no_update, no_update
 
-    # Campionamento dinamico
+    # Campionamento dinamico (max 1200 punti per fluidità)
     n_pts = 1200
     actual_range = end_block - start_block
     block_indices = np.linspace(start_block, end_block, min(n_pts, actual_range + 1)).astype(int)
@@ -383,6 +464,7 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
     time_axis = []
     time_labels = []
 
+    # Lettura Binaria
     with open(cfg['path'], 'rb') as f:
         for b_idx in block_indices:
             f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
@@ -391,52 +473,59 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
             
             time_axis.append(b_idx)
             time_labels.append(f"{record[4]:02d}:{record[5]:02d}:{record[6]:02d}")
-            
+
             for sid in selected_indices:
                 v_type, v_idx = sid.split('_')
                 idx = int(v_idx)
                 
                 if v_type == 'A':
-                    # ANALOGICO: Float32 Big Endian
                     offset = 13 + (idx * 4)
                     val = struct.unpack('>f', record[offset:offset+4])[0]
                     data_dict[sid].append(val if abs(val) < 1e15 else 0.0)
                 else:
-                    # DIGITALE: Bitfield Word (4 byte) Little Endian
                     ch = cfg['digital_channels'][idx]
                     dig_base = 13 + (cfg['n_analog'] * 4)
                     group_offset = dig_base + (ch['group'] * 4)
-                    
-                    # Leggiamo l'intera Word da 4 byte
                     raw_word = record[group_offset : group_offset+4]
                     if len(raw_word) == 4:
-                        # Unpack come intero 32-bit senza segno
                         full_word = struct.unpack('<I', raw_word)[0]
-                        # Estrazione bit specifica
-                        bit_val = (full_word >> ch['bit']) & 1
-                        data_dict[sid].append(bit_val)
+                        data_dict[sid].append((full_word >> ch['bit']) & 1)
                     else:
                         data_dict[sid].append(0)
 
     # Creazione Figura
     fig = go.Figure()
-    for sid in selected_indices:
+    colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3', '#FF6692', '#B6E880']
+    table_rows = []
+
+    for i, sid in enumerate(selected_indices):
         v_type, v_idx = sid.split('_')
         idx = int(v_idx)
         ch_info = cfg['analog_channels'][idx] if v_type == 'A' else cfg['digital_channels'][idx]
-        
+        color = colors[i % len(colors)]
+
+        # Aggiunta traccia al grafico
         fig.add_trace(go.Scattergl(
             x=time_axis, y=data_dict[sid], 
             name=f"[{v_type}] {ch_info['tag']}",
             text=time_labels,
+            line=dict(color=color),
             hovertemplate="<b>%{name}</b><br>Ora: %{text}<br>Val: %{y}<extra></extra>"
         ))
 
-    # Aggiornamento assi con Tick Temporali
+        table_rows.append({
+            "delete-row": "✘",  # Aggiungi questa riga
+            "tag": ch_info['tag'],
+            "desc": ch_info.get('desc', 'N/A'),
+            "color": color,
+            "cur_val": "---"
+        })
+
+    # Layout Grafico
     tick_indices = np.linspace(0, len(time_axis)-1, 10).astype(int)
     fig.update_layout(
         template="seaborn", margin=dict(l=20, r=20, t=30, b=80),
-        hovermode="x unified", uirevision='constant',
+        hovermode="x unified", uirevision='constant', clickmode='event+select',
         xaxis=dict(
             title="Orario", tickmode='array',
             tickvals=[time_axis[i] for i in tick_indices],
@@ -444,8 +533,62 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
             tickangle=45
         )
     )
-    return fig
 
+    return fig, table_rows
+
+# ─────────────────────────────────────────────────────────────────
+# CALLBACK CLICK: POSIZIONA CURSORE + AGGIORNA VALORI TABELLA
+# ─────────────────────────────────────────────────────────────────
+@callback(
+    [Output('wbin-info-table', 'data', allow_duplicate=True),
+     Output('wbin-main-graph', 'figure', allow_duplicate=True)],
+    Input('wbin-main-graph', 'clickData'),
+    [State('wbin-info-table', 'data'),
+     State('wbin-main-graph', 'figure')],
+    prevent_initial_call=True
+)
+def update_on_click(clickData, current_table, fig):
+    if not clickData or not current_table or not fig:
+        return no_update, no_update
+
+    # 1. Recupera la coordinata X del click
+    clicked_x = clickData['points'][0]['x']
+
+    # 2. Aggiorna i valori "Valore al Cursore" nella tabella
+    for row in current_table:
+        tag = row['tag']
+        val = "---"
+        # Cerchiamo tra le tracce del grafico quella corrispondente al tag
+        for trace in fig['data']:
+            if tag in trace['name']:
+                try:
+                    x_vals = list(trace['x'])
+                    if clicked_x in x_vals:
+                        idx = x_vals.index(clicked_x)
+                        y_val = trace['y'][idx]
+                        val = f"{y_val:.3f}"
+                except:
+                    pass
+                break
+        row['cur_val'] = val
+
+    # 3. Crea la linea verticale (Cursore)
+    cursor_line = {
+        'type': 'line',
+        'x0': clicked_x, 'x1': clicked_x,
+        'y0': 0, 'y1': 1, 'yref': 'paper',
+        'line': {
+            'color': 'red',
+            'width': 2,
+            'dash': 'dot',
+        }
+    }
+    
+    # Aggiorna il layout della figura esistente con la nuova shape
+    fig['layout']['shapes'] = [cursor_line]
+    fig['layout']['uirevision'] = 'constant' # Fondamentale per non perdere lo zoom
+
+    return current_table, fig
 @callback(
     Output('wbin-zoom-store', 'data'),
     Input('wbin-main-graph', 'relayoutData'),
