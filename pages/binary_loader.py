@@ -19,70 +19,110 @@ dash.register_page(__name__, name="Lettore Arch. Binarie", path="/wbin")
 
 def get_wbin_metadata(path):
     MARKER = b'[END]'
+    MARKER_DIG = '[DIGITAL]'
+    
     with open(path, 'rb') as f:
         blob = f.read(2048 * 1024)
     
     cuts = [m.start() for m in re.finditer(re.escape(MARKER), blob)]
-    if len(cuts) < 2: 
+    if len(cuts) < 2:
         raise ValueError("Marker [END] non trovati.")
-    
-    # Decodifica l'header
-    part1 = blob[:cuts[0]].decode('latin-1', errors='ignore')
-    lines = part1.splitlines()
-    
-    campaign_info = {"campaign": "N/A", "customer": "N/A", "coordinator": "N/A"}
-    
-    if lines:
-        # Replicazione della logica Mathematica:
-        # Split sulla tabulazione e rimozione degli elementi vuoti (DeleteCases)
-        raw_parts = lines[0].split('\t')
-        clean_parts = [p.strip() for p in raw_parts if p.strip()]
-        
-        # Mathematica vede 4 pezzi e fa Drop[..., 1], quindi ne restano 3
-        # Esempio: ["HeaderID", "Gas/Gasolio", "2AE94.3a", "Galgani"]
-        if len(clean_parts) >= 4:
-            campaign_info["campaign"]    = clean_parts[1]
-            campaign_info["customer"]    = clean_parts[2]
-            campaign_info["coordinator"] = clean_parts[3]
-        elif len(clean_parts) == 3:
-            # Caso di riserva se il primo pezzo manca
-            campaign_info["campaign"]    = clean_parts[0]
-            campaign_info["customer"]    = clean_parts[1]
-            campaign_info["coordinator"] = clean_parts[2]
 
-    # --- RESTO DELLA LOGICA (OFFSET E CANALI) ---
-    match = re.search(r'#(\d{9})', part1)
-    data_offset = int(match.group(1)) if match else 0
-    
-    # ... (il resto del codice per i canali analogici rimane uguale)
+    # ───── HEADER PARTS (CRITICAL) ─────
+    part1 = blob[:cuts[0]].decode('latin-1', errors='ignore')
+    part2 = blob[cuts[0]:cuts[1]].decode('latin-1', errors='ignore')
+
+    lines = part1.split('\n')   # only \n
+
+    # ───── CAMPAIGN ─────
+    campaign_info = {"campaign": "N/A", "customer": "N/A", "coordinator": "N/A"}
+    if lines:
+        parts = [p.strip() for p in lines[0].split('\t') if p.strip()]
+        if len(parts) >= 4:
+            campaign_info = {
+                "campaign": parts[1],
+                "customer": parts[2],
+                "coordinator": parts[3]
+            }
+
+    # ───── ANALOG ─────
     analog_channels = []
-    start_parsing = False
+    hdr_map = {}
+    parsing_analog = False
+
     for line in lines:
         cols = [c.strip() for c in line.split('\t')]
+        
         if 'Tag' in cols:
             hdr_map = {col: i for i, col in enumerate(cols)}
-            start_parsing = True; continue
-        if start_parsing and len(cols) > 1:
+            parsing_analog = True
+            continue
+        
+        if parsing_analog and len(cols) > 1:
             tag = cols[hdr_map.get('Tag', 0)].upper()
             if tag:
                 analog_channels.append({
-                    'tag': tag, 
+                    'tag': tag,
                     'unit': cols[hdr_map.get('EU', 1)] if 'EU' in hdr_map else "",
                     'desc': cols[hdr_map.get('Comment', 2)] if 'Comment' in hdr_map else ""
                 })
 
-    # Calcolo blockSize e total_blocks
-    part2 = blob[cuts[0]+len(MARKER):cuts[1]].decode('latin-1', errors='ignore')
-    n_uint32 = len([l for l in part2.splitlines() if ',' in l and '\t' in l])
+    # ───── DIGITAL (SAFE VERSION) ─────
+    digital_channels = []
+    group_idx = 0
+
+    for line in part2.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+        
+        if MARKER_DIG in line.upper():
+            continue
+        
+        if not line.upper().startswith('DIGITAL'):
+            continue
+        
+        cols = line.split('\t')
+        v_col = next((i for i, c in enumerate(cols) if ',' in c), 1)
+
+        if v_col < len(cols):
+            tags = [t.strip() for t in cols[v_col].split(',') if t.strip()]
+            
+            for bit_idx, tag in enumerate(tags[:32]):
+                digital_channels.append({
+                    'tag': tag.upper(),
+                    'group': group_idx,
+                    'bit': bit_idx,
+                    'type': 'D'
+                })
+            
+            group_idx += 1
+
+    # ───── OFFSET (USE VERSION 2 LOGIC) ─────
+    match = re.search(r'#(\d{9})', part1)
+    data_offset = int(match.group(1)) if match else 0
+
+    # ───── BLOCK SIZE (CRITICAL FIX) ─────
     n_analog = len(analog_channels)
+
+    # use REAL digital word count (NOT parsed groups)
+    n_uint32 = len([l for l in part2.split('\n') if ',' in l and '\t' in l])
+
     block_size = 13 + (n_analog * 4) + (n_uint32 * 4)
+
     total_blocks = (os.path.getsize(path) - data_offset) // block_size
-    
+
     return {
-        'path': path, 'data_offset': data_offset, 'block_size': block_size,
-        'total_blocks': total_blocks, 'analog_channels': analog_channels,
-        'n_analog': n_analog, 'meta': campaign_info
+        'path': path,
+        'data_offset': data_offset,
+        'block_size': block_size,
+        'total_blocks': total_blocks,
+        'n_analog': n_analog,
+        'analog_channels': analog_channels,
+        'digital_channels': digital_channels,
+        'meta': campaign_info
     }
+
 # ─────────────────────────────────────────────────────────────────
 # 2. LAYOUT LIGHT MODE (Bootstrap Standard)
 # ─────────────────────────────────────────────────────────────────
@@ -117,7 +157,7 @@ layout = dbc.Container([
                     searchable=True,
                     # Non aggiungere altri parametri extra che potrebbero non essere supportati
                 ),
-                dbc.Button("📈 GENERA GRAFICO", id="wbin-btn-plot", color="primary", className="w-100 mb-3"),
+                dbc.Button("Mostra grafico", id="wbin-btn-plot", color="primary", className="w-100 mb-3"),
                 
                 html.Div(id="wbin-status-msg")
             ], style={'padding': '20px', 'borderRight': '1px solid #ddd', 'minHeight': '90vh'})
@@ -152,26 +192,30 @@ def cb_open_file(n):
     
     try:
         cfg = get_wbin_metadata(path)
-        m = cfg['meta']
-        
+        n_analog = cfg.get('n_analog', 0)
+        n_digital = len(cfg.get('digital_channels', []))
+        m = cfg.get('meta', {'campaign': 'N/A', 'customer': 'N/A', 'coordinator': 'N/A'})
+
         info_content = dbc.Card([
             dbc.CardHeader("INFORMAZIONI FILE", className="fw-bold small"),
             dbc.CardBody([
                 html.Div([
                     html.P([html.B("File: "), os.path.basename(path)], className="mb-1 small"),
-                    html.P([html.B("Record: "), f"{cfg['total_blocks']:,}"], className="mb-1 small"),
-                    html.P([html.B("Canali: "), str(cfg['n_analog'])], className="mb-3 small"),
+                    html.P([html.B("Quantità dati: "), f"{cfg['total_blocks']:,}"], className="mb-1 small"),
+                    # --- Canali sdoppiati ---
+                    html.P([html.B("Canali analogici: "), str(n_analog)], className="mb-1 small"),
+                    html.P([html.B("Canali digitali: "), str(n_digital)], className="mb-3 small"),
                 ]),
                 html.Hr(),
                 html.Div([
                     html.Label("CAMPAIGN", className="text-primary fw-bold", style={'fontSize': '10px'}),
-                    html.P(m['campaign'], className="small mb-2"),
+                    html.P(m.get('campaign', 'N/A'), className="small mb-2"),
                     
                     html.Label("CUSTOMER", className="text-primary fw-bold", style={'fontSize': '10px'}),
-                    html.P(m['customer'], className="small mb-2"),
+                    html.P(m.get('customer', 'N/A'), className="small mb-2"),
                     
                     html.Label("COORDINATOR", className="text-primary fw-bold", style={'fontSize': '10px'}),
-                    html.P(m['coordinator'], className="small"),
+                    html.P(m.get('coordinator', 'N/A'), className="small"),
                 ])
             ])
         ], className="shadow-sm")
@@ -183,74 +227,79 @@ def cb_open_file(n):
 @callback(
     Output('wbin-tag-dropdown', 'options'),
     Input('wbin-tag-dropdown', 'search_value'),
-    State('wbin-tag-dropdown', 'value'), # Prendiamo i valori già selezionati
+    State('wbin-tag-dropdown', 'value'),
     State('wbin-config-store', 'data')
 )
 def cb_filter_tags(search, selected_values, cfg):
-    if not cfg:
+    # Se non c'è un file caricato, svuota il menu
+    if not cfg: 
         return []
     
-    # 1. Recuperiamo le opzioni già selezionate per non perderle
-    # Dobbiamo rimetterle nella lista delle opzioni, altrimenti Dash le scarta
+    # 1. RECUPERO OPZIONI SELEZIONATE (Per non perderle alla chiusura)
     final_options = []
     if selected_values:
-        for val_idx in selected_values:
-            ch = cfg['analog_channels'][val_idx]
-            final_options.append({
-                'label': f"{ch['tag']} - {ch['desc'][:40]}", 
-                'value': val_idx
-            })
-
-    # 2. Se non c'è ricerca, mostriamo i primi 20 (o solo i selezionati)
-    if not search:
-        # Se non sto cercando, mostro i selezionati + i primi 20 canali
-        existing_ids = [opt['value'] for opt in final_options]
-        for i, ch in enumerate(cfg['analog_channels'][:20]):
-            if i not in existing_ids:
+        for sid in selected_values:
+            v_type, v_idx = sid.split('_')
+            idx = int(v_idx)
+            # Scegliamo la lista giusta in base al prefisso
+            ch_list = cfg['analog_channels'] if v_type == 'A' else cfg['digital_channels']
+            if idx < len(ch_list):
+                ch = ch_list[idx]
                 final_options.append({
-                    'label': f"{ch['tag']} - {ch['desc'][:40]}", 
-                    'value': i
+                    'label': f"[{v_type}] {ch['tag']} - {ch.get('desc', '')[:35]}", 
+                    'value': sid
+                })
+
+    # 2. PREPARAZIONE LISTA UNIFICATA PER LA RICERCA
+    # Creiamo un "librone" unico dove cercare, mettendo un'etichetta A o D
+    search_pool = []
+    for i, ch in enumerate(cfg['analog_channels']):
+        search_pool.append({'info': ch, 'sid': f"A_{i}", 'type': 'A'})
+    for i, ch in enumerate(cfg['digital_channels']):
+        search_pool.append({'info': ch, 'sid': f"D_{i}", 'type': 'D'})
+
+    # 3. GESTIONE RICERCA E ASTERISCHI
+    # Se l'utente non sta scrivendo, mostriamo solo i selezionati + i primi 20 analogici
+    if not search:
+        existing_ids = [opt['value'] for opt in final_options]
+        for item in search_pool[:20]:
+            if item['sid'] not in existing_ids:
+                final_options.append({
+                    'label': f"[{item['type']}] {item['info']['tag']}", 
+                    'value': item['sid']
                 })
         return final_options
 
-    # 3. Logica di ricerca (Split & Match)
+    # Logica Chunks per l'asterisco (es: "004*PV" -> ["004", "PV"])
     s = search.upper().strip()
     chunks = [c.strip() for c in s.split('*') if c.strip()]
     
-    search_results = []
-    
-    # Caso speciale per soli asterischi
-    if not chunks and '*' in s:
-        search_results = [{'label': f"{ch['tag']} - {ch['desc'][:40]} {search}", 'value': i} 
-                         for i, ch in enumerate(cfg['analog_channels'][:100])]
-    else:
-        for i, ch in enumerate(cfg['analog_channels']):
-            tag_desc = f"{ch['tag']} {ch['desc']}".upper()
-            last_pos = 0
-            is_match = True
-            for chunk in chunks:
-                pos = tag_desc.find(chunk, last_pos)
-                if pos == -1:
-                    is_match = False
-                    break
-                last_pos = pos + len(chunk)
+    matches = []
+    for item in search_pool:
+        ch = item['info']
+        # Testo su cui cercare: Tag + Descrizione
+        target_text = f"{ch['tag']} {ch.get('desc', '')}".upper()
+        
+        # Un canale passa il filtro se contiene TUTTI i pezzi cercati
+        if all(chunk in target_text for chunk in chunks) or not chunks:
+            matches.append({
+                # Il (search) alla fine serve a ingannare il filtro client di Dash
+                'label': f"[{item['type']}] {ch['tag']} - {ch.get('desc', '')[:35]} ({search})",
+                'value': item['sid']
+            })
             
-            if is_match:
-                # Aggiungiamo il trucco del "search" nel label solo per i risultati della ricerca
-                search_results.append({
-                    'label': f"{ch['tag']} - {ch['desc'][:40]} ({search})", 
-                    'value': i
-                })
-            if len(search_results) >= 100:
-                break
+        # Limite per non rallentare il browser (max 100 risultati)
+        if len(matches) >= 100: 
+            break
 
-    # 4. Uniamo i risultati della ricerca a quelli già selezionati (senza duplicati)
+    # 4. UNIONE RISULTATI
     current_ids = [opt['value'] for opt in final_options]
-    for opt in search_results:
-        if opt['value'] not in current_ids:
-            final_options.append(opt)
+    for m in matches:
+        if m['value'] not in current_ids:
+            final_options.append(m)
             
     return final_options
+
 @callback(
     Output('wbin-main-graph', 'figure'),
     [Input('wbin-btn-plot', 'n_clicks'),
@@ -265,7 +314,6 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id'].split('.')[1]
 
-    # 1. DETERMINAZIONE LIMITI
     start_block = 0
     end_block = cfg['total_blocks'] - 1
 
@@ -276,16 +324,17 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
         elif 'xaxis.autorange' in relayout_data:
             start_block = 0
             end_block = cfg['total_blocks'] - 1
-        else:
-            return no_update
+        else: return no_update
 
-    # 2. CAMPIONAMENTO DATI PER LE TRACCE (1200 punti)
+    # Campionamento dinamico
     n_pts = 1200
-    block_indices = np.linspace(start_block, end_block, n_pts).astype(int)
+    actual_range = end_block - start_block
+    block_indices = np.linspace(start_block, end_block, min(n_pts, actual_range + 1)).astype(int)
 
-    data_dict = {idx: [] for idx in selected_indices}
+    data_dict = {sid: [] for sid in selected_indices}
     time_axis = []
-    
+    time_labels = []
+
     with open(cfg['path'], 'rb') as f:
         for b_idx in block_indices:
             f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
@@ -293,50 +342,60 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
             if len(record) < cfg['block_size']: break
             
             time_axis.append(b_idx)
-            for ch_idx in selected_indices:
-                offset = 13 + (ch_idx * 4)
-                val = struct.unpack('>f', record[offset:offset+4])[0]
-                data_dict[ch_idx].append(val if abs(val) < 1e15 else 0.0)
+            time_labels.append(f"{record[4]:02d}:{record[5]:02d}:{record[6]:02d}")
+            
+            for sid in selected_indices:
+                v_type, v_idx = sid.split('_')
+                idx = int(v_idx)
+                
+                if v_type == 'A':
+                    # ANALOGICO: Float32 Big Endian
+                    offset = 13 + (idx * 4)
+                    val = struct.unpack('>f', record[offset:offset+4])[0]
+                    data_dict[sid].append(val if abs(val) < 1e15 else 0.0)
+                else:
+                    # DIGITALE: Bitfield Word (4 byte) Little Endian
+                    ch = cfg['digital_channels'][idx]
+                    dig_base = 13 + (cfg['n_analog'] * 4)
+                    group_offset = dig_base + (ch['group'] * 4)
+                    
+                    # Leggiamo l'intera Word da 4 byte
+                    raw_word = record[group_offset : group_offset+4]
+                    if len(raw_word) == 4:
+                        # Unpack come intero 32-bit senza segno
+                        full_word = struct.unpack('<I', raw_word)[0]
+                        # Estrazione bit specifica
+                        bit_val = (full_word >> ch['bit']) & 1
+                        data_dict[sid].append(bit_val)
+                    else:
+                        data_dict[sid].append(0)
 
-    # 3. CREAZIONE FIGURA
+    # Creazione Figura
     fig = go.Figure()
-    for ch_idx in selected_indices:
-        ch = cfg['analog_channels'][ch_idx]
-        fig.add_trace(go.Scattergl(x=time_axis, y=data_dict[ch_idx], name=ch['tag']))
-    
-    # 4. COSTRUZIONE ETICHETTE ORARIO (TICK_VALS DEFINITE QUI)
-    # Calcoliamo 10 posizioni equispaziate per le scritte sull'asse X
-    tick_vals = np.linspace(start_block, end_block, 10).astype(int)
-    tick_text = []
-    
-    with open(cfg['path'], 'rb') as f:
-        for tv in tick_vals:
-            f.seek(cfg['data_offset'] + (int(tv) * cfg['block_size']))
-            r = f.read(13) 
-            if len(r) >= 7:
-                tick_text.append(f"{r[4]:02d}:{r[5]:02d}:{r[6]:02d}")
-            else:
-                tick_text.append("")
+    for sid in selected_indices:
+        v_type, v_idx = sid.split('_')
+        idx = int(v_idx)
+        ch_info = cfg['analog_channels'][idx] if v_type == 'A' else cfg['digital_channels'][idx]
+        
+        fig.add_trace(go.Scattergl(
+            x=time_axis, y=data_dict[sid], 
+            name=f"[{v_type}] {ch_info['tag']}",
+            text=time_labels,
+            hovertemplate="<b>%{name}</b><br>Ora: %{text}<br>Val: %{y}<extra></extra>"
+        ))
 
-    # 5. AGGIORNAMENTO LAYOUT
+    # Aggiornamento assi con Tick Temporali
+    tick_indices = np.linspace(0, len(time_axis)-1, 10).astype(int)
     fig.update_layout(
-        template="plotly_white",
-        margin=dict(l=20, r=20, t=30, b=80),
-        hovermode="x unified",
-        uirevision='constant',
+        template="plotly_white", margin=dict(l=20, r=20, t=30, b=80),
+        hovermode="x unified", uirevision='constant',
         xaxis=dict(
-            title="Orario",
-            tickmode='array',
-            tickvals=list(tick_vals), # Ora tick_vals è correttamente definita sopra!
-            ticktext=tick_text,
-            tickangle=45,
-            automargin=True,
-            gridcolor="#eee"
-        ),
-        yaxis=dict(gridcolor="#eee", title="Valore"),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            title="Orario", tickmode='array',
+            tickvals=[time_axis[i] for i in tick_indices],
+            ticktext=[time_labels[i] for i in tick_indices],
+            tickangle=45
+        )
     )
-    
     return fig
 
 
@@ -362,10 +421,3 @@ def update_zoom_limits(relayout_data, cfg):
         return no_update # Gestiremo lo zoom direttamente nella callback di plot
     
     return no_update
-
-
-
-
-
-
-
