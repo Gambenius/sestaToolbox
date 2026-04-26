@@ -89,7 +89,7 @@ def get_wbin_metadata(path):
 
 layout = dbc.Container([
     dcc.Store(id='wbin-config-store'),
-    
+    dcc.Store(id='wbin-zoom-store', data={'start': 0, 'end': None}),
     dbc.Row([
         # Sidebar
         dbc.Col([
@@ -111,10 +111,12 @@ layout = dbc.Container([
                 dcc.Dropdown(
                     id='wbin-tag-dropdown',
                     multi=True,
-                    placeholder="Digita per cercare...",
-                    className="mb-4"
+                    placeholder="Cerca (es. 004*PV)...",
+                    className="mb-4",
+                    options=[],
+                    searchable=True,
+                    # Non aggiungere altri parametri extra che potrebbero non essere supportati
                 ),
-                
                 dbc.Button("📈 GENERA GRAFICO", id="wbin-btn-plot", color="primary", className="w-100 mb-3"),
                 
                 html.Div(id="wbin-status-msg")
@@ -181,71 +183,106 @@ def cb_open_file(n):
 @callback(
     Output('wbin-tag-dropdown', 'options'),
     Input('wbin-tag-dropdown', 'search_value'),
+    State('wbin-tag-dropdown', 'value'), # Prendiamo i valori già selezionati
     State('wbin-config-store', 'data')
 )
-def cb_filter_tags(search, cfg):
-    # Debug: guarda il terminale dove gira lo script per vedere cosa arriva
-    print(f"DEBUG - Input ricevuto: '{search}'")
+def cb_filter_tags(search, selected_values, cfg):
+    if not cfg:
+        return []
     
-    if not search or not cfg: 
-        return no_update
-    
-    # 1. Normalizzazione totale
-    # Trasformiamo in maiuscolo e puliamo spazi
+    # 1. Recuperiamo le opzioni già selezionate per non perderle
+    # Dobbiamo rimetterle nella lista delle opzioni, altrimenti Dash le scarta
+    final_options = []
+    if selected_values:
+        for val_idx in selected_values:
+            ch = cfg['analog_channels'][val_idx]
+            final_options.append({
+                'label': f"{ch['tag']} - {ch['desc'][:40]}", 
+                'value': val_idx
+            })
+
+    # 2. Se non c'è ricerca, mostriamo i primi 20 (o solo i selezionati)
+    if not search:
+        # Se non sto cercando, mostro i selezionati + i primi 20 canali
+        existing_ids = [opt['value'] for opt in final_options]
+        for i, ch in enumerate(cfg['analog_channels'][:20]):
+            if i not in existing_ids:
+                final_options.append({
+                    'label': f"{ch['tag']} - {ch['desc'][:40]}", 
+                    'value': i
+                })
+        return final_options
+
+    # 3. Logica di ricerca (Split & Match)
     s = search.upper().strip()
-    
-    # 2. Gestione degli Asterischi (Wildcards)
-    # Creiamo una lista di "parole chiave" divise dall'asterisco
-    # Se l'utente scrive 004*PV, otteniamo ["004", "PV"]
-    # Se scrive **, otteniamo una lista vuota []
     chunks = [c.strip() for c in s.split('*') if c.strip()]
     
-    # 3. Caso speciale: solo asterischi (es. * o **)
-    # Se non ci sono pezzi di testo ma la ricerca non è vuota, l'utente vuole vedere tutto
+    search_results = []
+    
+    # Caso speciale per soli asterischi
     if not chunks and '*' in s:
-        return [{'label': f"{ch['tag']} - {ch['desc'][:45]}", 'value': i} 
-                for i, ch in enumerate(cfg['analog_channels'][:100])]
-
-    # 4. Ricerca sequenziale (Simulazione Linux Globbing)
-    matches = []
-    for i, ch in enumerate(cfg['analog_channels']):
-        tag_desc = f"{ch['tag']} {ch['desc']}".upper()
-        
-        # Verifichiamo se tutti i chunks sono presenti nel tag/descrizione
-        # e se appaiono nell'ordine corretto
-        current_pos = 0
-        is_match = True
-        
-        for chunk in chunks:
-            pos = tag_desc.find(chunk, current_pos)
-            if pos == -1:
-                is_match = False
+        search_results = [{'label': f"{ch['tag']} - {ch['desc'][:40]} {search}", 'value': i} 
+                         for i, ch in enumerate(cfg['analog_channels'][:100])]
+    else:
+        for i, ch in enumerate(cfg['analog_channels']):
+            tag_desc = f"{ch['tag']} {ch['desc']}".upper()
+            last_pos = 0
+            is_match = True
+            for chunk in chunks:
+                pos = tag_desc.find(chunk, last_pos)
+                if pos == -1:
+                    is_match = False
+                    break
+                last_pos = pos + len(chunk)
+            
+            if is_match:
+                # Aggiungiamo il trucco del "search" nel label solo per i risultati della ricerca
+                search_results.append({
+                    'label': f"{ch['tag']} - {ch['desc'][:40]} ({search})", 
+                    'value': i
+                })
+            if len(search_results) >= 100:
                 break
-            # Spostiamo il puntatore dopo il pezzo trovato per il prossimo chunk
-            current_pos = pos + len(chunk)
-            
-        if is_match:
-            matches.append({
-                'label': f"{ch['tag']} - {ch['desc'][:45]}", 
-                'value': i
-            })
-            
-        if len(matches) >= 100: 
-            break
-                
-    return matches
 
+    # 4. Uniamo i risultati della ricerca a quelli già selezionati (senza duplicati)
+    current_ids = [opt['value'] for opt in final_options]
+    for opt in search_results:
+        if opt['value'] not in current_ids:
+            final_options.append(opt)
+            
+    return final_options
 @callback(
     Output('wbin-main-graph', 'figure'),
-    Input('wbin-btn-plot', 'n_clicks'),
-    [State('wbin-tag-dropdown', 'value'), State('wbin-config-store', 'data')],
+    [Input('wbin-btn-plot', 'n_clicks'),
+     Input('wbin-main-graph', 'relayoutData')],
+    [State('wbin-tag-dropdown', 'value'), 
+     State('wbin-config-store', 'data')],
     prevent_initial_call=True
 )
-def cb_render_graph(n, selected_indices, cfg):
+def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
     if not selected_indices or not cfg: return no_update
     
+    ctx = dash.callback_context
+    trigger = ctx.triggered[0]['prop_id'].split('.')[1]
+
+    # 1. DETERMINAZIONE LIMITI
+    start_block = 0
+    end_block = cfg['total_blocks'] - 1
+
+    if trigger == 'relayoutData' and relayout_data:
+        if 'xaxis.range[0]' in relayout_data:
+            start_block = max(0, int(float(relayout_data['xaxis.range[0]'])))
+            end_block = min(cfg['total_blocks'] - 1, int(float(relayout_data['xaxis.range[1]'])))
+        elif 'xaxis.autorange' in relayout_data:
+            start_block = 0
+            end_block = cfg['total_blocks'] - 1
+        else:
+            return no_update
+
+    # 2. CAMPIONAMENTO DATI PER LE TRACCE (1200 punti)
     n_pts = 1200
-    block_indices = np.unique(np.linspace(0, cfg['total_blocks'] - 1, n_pts).astype(int))
+    block_indices = np.linspace(start_block, end_block, n_pts).astype(int)
+
     data_dict = {idx: [] for idx in selected_indices}
     time_axis = []
     
@@ -255,20 +292,80 @@ def cb_render_graph(n, selected_indices, cfg):
             record = f.read(cfg['block_size'])
             if len(record) < cfg['block_size']: break
             
-            time_axis.append(f"{record[4]:02d}:{record[5]:02d}:{record[6]:02d}")
+            time_axis.append(b_idx)
             for ch_idx in selected_indices:
                 offset = 13 + (ch_idx * 4)
                 val = struct.unpack('>f', record[offset:offset+4])[0]
                 data_dict[ch_idx].append(val if abs(val) < 1e15 else 0.0)
 
+    # 3. CREAZIONE FIGURA
     fig = go.Figure()
     for ch_idx in selected_indices:
         ch = cfg['analog_channels'][ch_idx]
         fig.add_trace(go.Scattergl(x=time_axis, y=data_dict[ch_idx], name=ch['tag']))
     
+    # 4. COSTRUZIONE ETICHETTE ORARIO (TICK_VALS DEFINITE QUI)
+    # Calcoliamo 10 posizioni equispaziate per le scritte sull'asse X
+    tick_vals = np.linspace(start_block, end_block, 10).astype(int)
+    tick_text = []
+    
+    with open(cfg['path'], 'rb') as f:
+        for tv in tick_vals:
+            f.seek(cfg['data_offset'] + (int(tv) * cfg['block_size']))
+            r = f.read(13) 
+            if len(r) >= 7:
+                tick_text.append(f"{r[4]:02d}:{r[5]:02d}:{r[6]:02d}")
+            else:
+                tick_text.append("")
+
+    # 5. AGGIORNAMENTO LAYOUT
     fig.update_layout(
-        template="plotly_white", # Tema chiaro per il grafico
-        margin=dict(l=20, r=20, t=30, b=20),
-        hovermode="x unified"
+        template="plotly_white",
+        margin=dict(l=20, r=20, t=30, b=80),
+        hovermode="x unified",
+        uirevision='constant',
+        xaxis=dict(
+            title="Orario",
+            tickmode='array',
+            tickvals=list(tick_vals), # Ora tick_vals è correttamente definita sopra!
+            ticktext=tick_text,
+            tickangle=45,
+            automargin=True,
+            gridcolor="#eee"
+        ),
+        yaxis=dict(gridcolor="#eee", title="Valore"),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
+    
     return fig
+
+
+@callback(
+    Output('wbin-zoom-store', 'data'),
+    Input('wbin-main-graph', 'relayoutData'),
+    State('wbin-config-store', 'data'),
+    prevent_initial_call=True
+)
+def update_zoom_limits(relayout_data, cfg):
+    if not cfg: return no_update
+    
+    # Se l'utente fa doppio clic (reset)
+    if not relayout_data or 'xaxis.autorange' in relayout_data or 'autosize' in relayout_data:
+        return {'start': 0, 'end': cfg['total_blocks'] - 1}
+    
+    # Se l'utente zooma
+    if 'xaxis.range[0]' in relayout_data:
+        # Il grafico usa il tempo (stringhe), ma noi dobbiamo convertirlo in indici di blocco
+        # Un trucco semplice: se l'asse X è basato su indici o tempi, 
+        # Plotly restituisce i valori visibili. 
+        # Se i tuoi dati sono a 1Hz, possiamo mappare i tempi o usare gli indici.
+        return no_update # Gestiremo lo zoom direttamente nella callback di plot
+    
+    return no_update
+
+
+
+
+
+
+
