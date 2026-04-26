@@ -204,40 +204,75 @@ layout = dbc.Container([
         # Grafico
         dbc.Col([
             dcc.Loading(
-                dcc.Graph(id='wbin-main-graph', style={'height': '85vh'}),
+                html.Div(
+                    dcc.Graph(
+                        id='wbin-main-graph', 
+                        style={'height': '100%', 'width': '100%'} # Importante: occupa tutto il div
+                    ),
+                    style={
+                        'height': '80vh',          # Altezza iniziale
+                        'minHeight': '300px',      # Altezza minima
+                        'overflow': 'hidden',      # Necessario per il resize
+                        'resize': 'vertical',      # Abilita il trascinamento dal bordo inferiore
+                        'borderBottom': '2px solid #ddd', # Un piccolo bordo per far capire dove trascinare
+                        'paddingBottom': '5px',
+                        'if': {'state': 'active'},
+                        'backgroundColor': '#e8f0fe', # Un azzurrino molto tenue quando la cella è attiva
+                        'border': '1px solid #4C78A8'
+                    }
+                ),
                 type="default"
             ),
             dash_table.DataTable(
                 id='wbin-info-table',
                 columns=[
-                    {"name": "X", "id": "delete-row", "editable": False}, # Colonna cestino
+                    {"name": "Rimuovi", "id": "delete-row", "editable": False},
                     {"name": "Tag", "id": "tag", "editable": False},
                     {"name": "Descrizione", "id": "desc", "editable": False},
-                    {"name": "Colore", "id": "color", "presentation": "dropdown"},
-                    {"name": "Valore al Cursore", "id": "cur_val", "editable": False}
+                    {"name": "Colore", "id": "color", "editable": False},
+                    {"name": "Valore al cursore", "id": "cur_val", "editable": False}
                 ],
                 data=[],
-                editable=True,
-                dropdown={
-                    'color': {
-                        'options': [
-                            {'label': '🔵 Blu', 'value': '#4C78A8'},
-                            {'label': '🔴 Rosso', 'value': '#E15759'},
-                            {'label': '🟢 Verde', 'value': '#59A14F'},
-                            {'label': '🟠 Arancio', 'value': '#EDC948'},
-                            {'label': '🟣 Viola', 'value': '#B07AA1'},
-                            {'label': '⚫ Nero', 'value': '#333333'}
-                        ]
-                    }
-                },
-                # Stile Light Mode
-                style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'border': '1px solid #dee2e6'},
-                style_data={'backgroundColor': 'white', 'border': '1px solid #dee2e6'},
-                style_cell={'textAlign': 'left', 'padding': '10px', 'fontFamily': 'sans-serif'},
+                # Unica occorrenza di style_data_conditional
                 style_data_conditional=[
-                    {'if': {'column_id': 'delete-row'}, 'cursor': 'pointer', 'textAlign': 'center', 'color': 'red', 'fontWeight': 'bold'},
-                    {'if': {'column_id': 'cur_val'}, 'color': 'black', 'fontWeight': 'normal'} # Testo nero regular
-                ]
+                    # Stile per la colonna elimina (X)
+                    {
+                        'if': {'column_id': 'delete-row'},
+                        'cursor': 'pointer',
+                        'textAlign': 'center',
+                        'color': 'red',
+                        'fontWeight': 'bold'
+                    },
+                    # Stile per la colonna Valore (Testo nero regular)
+                    {
+                        'if': {'column_id': 'cur_val'},
+                        'color': 'black',
+                        'fontWeight': 'normal'
+                    },
+                    # Rimuove l'evidenziazione blu della cella attiva
+                    {
+                        'if': {'state': 'active'},
+                        'backgroundColor': 'inherit',
+                        'border': '1px solid #dee2e6'
+                    }
+                ],
+                style_header={
+                    'backgroundColor': '#f8f9fa',
+                    'color': '#2c3e50',
+                    'fontWeight': 'bold',
+                    'border': '1px solid #dee2e6'
+                },
+                style_data={
+                    'backgroundColor': 'white',
+                    'color': '#495057',
+                    'border': '1px solid #dee2e6'
+                },
+                style_cell={
+                    'textAlign': 'left',
+                    'padding': '10px',
+                    'fontFamily': 'Segoe UI, sans-serif',
+                    'fontSize': '13px'
+                }
             )
         ], width=9)
     ], className="mt-3")
@@ -246,56 +281,6 @@ layout = dbc.Container([
 # ─────────────────────────────────────────────────────────────────
 # 3. CALLBACKS
 # ─────────────────────────────────────────────────────────────────
-@callback(
-    [Output('wbin-info-table', 'data', allow_duplicate=True),
-     Output('wbin-main-graph', 'figure', allow_duplicate=True),
-     Output('wbin-tag-dropdown', 'value', allow_duplicate=True),
-     Output('wbin-info-table', 'active_cell')], # Aggiunto per resettare il click
-    [Input('wbin-info-table', 'active_cell'),
-     Input('wbin-info-table', 'data')],
-    [State('wbin-info-table', 'data'),
-     State('wbin-main-graph', 'figure'),
-     State('wbin-tag-dropdown', 'value'),
-     State('wbin-config-store', 'data')],
-    prevent_initial_call=True
-)
-def handle_table_interactions(active_cell, table_data, current_rows, fig, current_tags, cfg):
-    ctx = dash.callback_context
-    if not ctx.triggered: return no_update, no_update, no_update, no_update
-    
-    trigger_id = ctx.triggered[0]['prop_id']
-
-    # --- ELIMINAZIONE RIGA ---
-    if "active_cell" in trigger_id and active_cell:
-        if active_cell['column_id'] == 'delete-row':
-            row_idx = active_cell['row']
-            tag_to_remove = current_rows[row_idx]['tag']
-            
-            # Rimuovi dalla tabella
-            new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
-            
-            # Rimuovi dal grafico
-            fig['data'] = [t for t in fig['data'] if tag_to_remove not in t['name']]
-            
-            # Sincronizza Dropdown
-            new_tags = []
-            for sid in current_tags:
-                if get_tagname_from_sid(sid, cfg) != tag_to_remove:
-                    new_tags.append(sid)
-            
-            # Restituiamo None all'active_cell per "deselezionare" visivamente
-            return new_table, fig, new_tags, None
-
-    # --- CAMBIO COLORE ---
-    if "data" in trigger_id:
-        for row in table_data:
-            tag = row['tag']
-            for trace in fig['data']:
-                if tag in trace['name']:
-                    trace['line']['color'] = row['color']
-        return table_data, fig, no_update, no_update
-
-    return no_update, no_update, no_update, no_update
 
 @callback(
     [Output('wbin-config-store', 'data'), 
@@ -506,13 +491,19 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
 
         # Aggiunta traccia al grafico
         fig.add_trace(go.Scattergl(
-            x=time_axis, y=data_dict[sid], 
-            name=f"[{v_type}] {ch_info['tag']}",
-            text=time_labels,
-            line=dict(color=color),
-            hovertemplate="<b>%{name}</b><br>Ora: %{text}<br>Val: %{y}<extra></extra>"
+            x=time_axis, 
+            y=data_dict[sid], 
+            name=ch_info['tag'],
+            # Questo è fondamentale: permette a %{text} di funzionare nell'hover
+            customdata=time_labels, 
+            line=dict(color=color, width=1.5),
+            # Rimuoviamo l'orario dalla riga singola (lo abbiamo già nel titolo sopra)
+            hovertemplate="<span style='color:inherit'></span> %{y:.3f}<extra></extra>"
         ))
-
+        fig.update_traces(
+            customdata=time_labels,
+            hovertemplate="<span style='color:inherit'></span> %{y:.3f}<extra></extra>"
+        )
         table_rows.append({
             "delete-row": "✘",  # Aggiungi questa riga
             "tag": ch_info['tag'],
@@ -523,17 +514,26 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
 
     # Layout Grafico
     tick_indices = np.linspace(0, len(time_axis)-1, 10).astype(int)
+
     fig.update_layout(
-        template="seaborn", margin=dict(l=20, r=20, t=30, b=80),
-        hovermode="x unified", uirevision='constant', clickmode='event+select',
+        hovermode="x unified",
+        hoverlabel=dict(
+            bgcolor="rgba(255, 255, 255, 0.9)",
+            font_size=13,
+        ),
         xaxis=dict(
             title="Orario", tickmode='array',
             tickvals=[time_axis[i] for i in tick_indices],
             ticktext=[time_labels[i] for i in tick_indices],
-            tickangle=45
-        )
-    )
+            tickangle=45,
+            unifiedhovertitle=dict(
+                # Usiamo %{text} perché lì abbiamo salvato HH:MM:SS nel Scattergl
 
+                text='<b>Ora: %{customdata}</b>'
+            ),
+        ),
+        yaxis=dict(gridcolor='#f0f0f0')
+    )
     return fig, table_rows
 
 # ─────────────────────────────────────────────────────────────────
@@ -873,7 +873,94 @@ def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
     df = pd.DataFrame(rows, columns=headers)
     return dcc.send_data_frame(df.to_csv, "export_data.csv", index=False), f"Esportati {len(rows)} record."
 
+# --- TABELLE E GRAFICA
 
+@callback(
+    Output('wbin-info-table', 'style_data_conditional', allow_duplicate=True),
+    Input('wbin-info-table', 'data'),
+    prevent_initial_call=True
+)
+def update_table_colors(data):
+    if not data:
+        return no_update
+    
+    # Stili base (quelli che abbiamo scritto sopra nel layout)
+    base_styles = [
+        {'if': {'column_id': 'delete-row'}, 'cursor': 'pointer', 'textAlign': 'center', 'color': 'red', 'fontWeight': 'bold'},
+        {'if': {'column_id': 'cur_val'}, 'color': 'black', 'fontWeight': 'normal'},
+        {'if': {'state': 'active'}, 'backgroundColor': 'inherit', 'border': '1px solid #dee2e6'}
+    ]
+    
+    # Aggiungiamo i colori di sfondo per ogni riga basandoci sul valore HEX in row['color']
+    for i, row in enumerate(data):
+        base_styles.append({
+            'if': {
+                'column_id': 'color',
+                'row_index': i
+            },
+            'backgroundColor': row['color'],
+            'color': row['color'] # Rende il testo invisibile (stesso colore dello sfondo)
+        })
+    
+    return base_styles
+
+@callback(
+    [Output('wbin-info-table', 'data', allow_duplicate=True),
+     Output('wbin-main-graph', 'figure', allow_duplicate=True),
+     Output('wbin-tag-dropdown', 'value', allow_duplicate=True),
+     Output('wbin-info-table', 'active_cell')],
+    [Input('wbin-info-table', 'active_cell'),
+     Input('wbin-info-table', 'data')],
+    [State('wbin-info-table', 'data'),
+     State('wbin-main-graph', 'figure'),
+     State('wbin-tag-dropdown', 'value'),
+     State('wbin-config-store', 'data')],
+    prevent_initial_call=True
+)
+def handle_table_logic(active_cell, table_data_input, current_rows, fig, current_tags, cfg):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return no_update, no_update, no_update, no_update
+    
+    trigger_id = ctx.triggered[0]['prop_id']
+
+    # --- 1. GESTIONE CLICK SU CELLA (ELIMINA O BOLD) ---
+    if "active_cell" in trigger_id and active_cell:
+        row_idx = active_cell['row']
+        col_id = active_cell['column_id']
+        selected_tag = current_rows[row_idx]['tag']
+
+        # CASO A: CLICK SU CESTINO (ELIMINA)
+        if col_id == 'delete-row':
+            new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
+            fig['data'] = [t for t in fig['data'] if selected_tag not in t['name']]
+            
+            # Sincronizza Dropdown
+            new_tags = []
+            if current_tags:
+                for sid in current_tags:
+                    if get_tagname_from_sid(sid, cfg) != selected_tag:
+                        new_tags.append(sid)
+            
+            return new_table, fig, new_tags, None
+
+        # CASO B: CLICK SU ALTRA CELLA (HIGHLIGHT BOLD)
+        else:
+            for trace in fig['data']:
+                if selected_tag in trace['name']:
+                    trace['line']['width'] = 4   # Bold
+                else:
+                    trace['line']['width'] = 1.5 # Normal
+            
+            fig['layout']['uirevision'] = 'constant'
+            return no_update, fig, no_update, no_update
+
+    # --- 2. GESTIONE CAMBIO DATI (ES. COLORE SE AVESSI MANTENUTO IL DROPDOWN) ---
+    if "wbin-info-table.data" in trigger_id:
+        # Qui potresti gestire modifiche manuali ai dati se necessario
+        return no_update, no_update, no_update, no_update
+
+    return no_update, no_update, no_update, no_update
 
 
 
