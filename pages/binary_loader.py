@@ -589,6 +589,7 @@ def update_on_click(clickData, current_table, fig):
     fig['layout']['uirevision'] = 'constant' # Fondamentale per non perdere lo zoom
 
     return current_table, fig
+
 @callback(
     Output('wbin-zoom-store', 'data'),
     Input('wbin-main-graph', 'relayoutData'),
@@ -762,7 +763,6 @@ def time_to_seconds(t_str):
         return None
 
 # --- CALLBACK 1: SINCRONIZZAZIONE ZOOM -> INPUT TESTO ---
-# 1. IL SINCRONIZZATORE (Sostituisce i precedenti sync_...)
 @callback(
     [Output('start-timecut', 'value'),
      Output('end-timecut', 'value')],
@@ -791,21 +791,31 @@ def sync_export_range(cfg, relayout_data, fig):
         # ZOOM MANUALE
         if 'xaxis.range[0]' in relayout_data and fig and fig['data']:
             try:
-                idx_start = int(float(relayout_data['xaxis.range[0]']))
-                idx_end = int(float(relayout_data['xaxis.range[1]']))
+                idx_start = float(relayout_data['xaxis.range[0]'])
+                idx_end = float(relayout_data['xaxis.range[1]'])
                 
-                times = fig['data'][0].get('text', [])
+                # MODIFICA QUI: Cerchiamo in customdata, se vuoto cerchiamo in text
+                times = fig['data'][0].get('customdata', [])
+                if not times:
+                    times = fig['data'][0].get('text', [])
+                
                 x_axis = fig['data'][0].get('x', [])
                 
-                if not times: return no_update, no_update
+                if not times or not x_axis: 
+                    return no_update, no_update
                 
+                # Cerchiamo l'orario corrispondente agli indici zoomati
+                # Usiamo indici interi per sicurezza
                 t_s = next((times[i] for i, v in enumerate(x_axis) if v >= idx_start), times[0])
                 t_e = next((times[i] for i, v in reversed(list(enumerate(x_axis))) if v <= idx_end), times[-1])
+                
                 return t_s, t_e
-            except:
+            except Exception as e:
+                print(f"Errore sync zoom: {e}")
                 return no_update, no_update
 
     return no_update, no_update
+
 # --- CALLBACK 2: GENERAZIONE E DOWNLOAD CSV ---
 @callback(
     [Output("download-csv", "data"),
