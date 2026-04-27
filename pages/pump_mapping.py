@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, callback, Input, Output, State, clientside_callback
+from dash import html, dcc, callback, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
 import pandas as pd
 import numpy as np
@@ -10,30 +10,21 @@ from CoolProp.CoolProp import PropsSI
 import io
 import base64
 
-from utils.ui_components import create_tag_copy_section
+dash.register_page(__name__, name="Mappa pompa vol.")
 
-dash.register_page(__name__, name="Mappa Gasolio 09CA004")
-
-# --- DATABASE CONFIGURATION ---
-PUMP_CONFIG = {
-    "CA004": {
-        "F023MIS1": "portata_pompa [g/s]",
-        "F024MIS2": "pressione_pompa [bar]",
-        "F025MIS3": "corrente_inverter [A]",
-        "T001MIS1": "temperatura_olio [°C]"
-    },
-    "CA550": {
-        "P055MIS1": "pressione_mandata [bar]",
-        "T055MIS1": "temperatura_aspirazione [°C]",
-        "F055MIS2": "portata_massa [g/s]"
-    }
-}
-
-# --- FUNZIONI FISICHE ---
 def pump_physics_model(X, k_hyd, k_leak, k_fric, offset):
-    Q_mass, P, mu = X
-    # Modello: I = k_hyd·P·Q + k_leak·P/μ + k_fric·μ·Q + offset
-    return (k_hyd * P * Q_mass) + (k_leak * P / mu) + (k_fric * mu * Q_mass) + offset
+    Q_vol, P_pa, mu_pas = X
+    
+    # Termine Idraulico: Lavoro utile
+    term_hyd = k_hyd * (P_pa * Q_vol)
+    
+    # Termine Leakage: Perdite per trafilamento (P / mu)
+    term_leak = k_leak * (P_pa / mu_pas)
+    
+    # Termine Friction: Attriti viscosi (mu * Q)
+    term_fric = k_fric * (mu_pas * Q_vol)
+    
+    return term_hyd + term_leak + term_fric + offset
 
 def get_fluid_props(temp_c, pres_bar):
     tk = temp_c + 273.15
@@ -48,27 +39,49 @@ def get_fluid_props(temp_c, pres_bar):
 layout = dbc.Container([
     dbc.Row([
         dbc.Col([
-            html.H4("Parametri Modello", className="mb-3"),
+            html.H4("Configurazione Mappa", className="mb-3"),
             dbc.Card([
                 dbc.CardBody([
-                    create_tag_copy_section(PUMP_CONFIG),
-                    html.Hr(),
-                    html.Label("1. Carica dati da archiviazione binaria"),
+                    html.Label("1. Carica file CSV dati pompa"),
                     dcc.Upload(
                         id='upload-data',
                         children=html.Div(['Trascina o ', html.A('scegli CSV')]),
                         style={'width': '100%', 'height': '60px', 'lineHeight': '60px', 'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px', 'textAlign': 'center', 'marginBottom': '15px'}
                     ),
-                    html.Label("2. Soglia Trip Inverter [A]"),
-                    dbc.Input(id="trip-limit", type="number", value=30, step=1, className="mb-4"),
-                    dbc.Button("Genera mappa", id="process-btn", color="danger", className="w-100"),
+                    
+                    html.Div(id='column-selectors', children=[
+                        html.Label("Corrente:"),
+                        dbc.Row([
+                            dbc.Col(dcc.Dropdown(id='col-current'), width=8),
+                            dbc.Col(dbc.Checkbox(id="curr-is-deci", label="Valori in [dA]", value=False, style={"fontSize": "0.8rem"}), width=4),
+                        ], className="mb-2 align-items-center"),
+                        
+                        html.Label("Giri [RPM]:"), dcc.Dropdown(id='col-rpm', className="mb-2"),
+                        html.Label("Portata Massica [kg/s]:"), dcc.Dropdown(id='col-massflow', className="mb-2"),
+                        html.Label("Pressione Ingresso [bar]:"), dcc.Dropdown(id='col-p-in', className="mb-2"),
+                        html.Label("Pressione Uscita [bar]:"), dcc.Dropdown(id='col-p-out', className="mb-3"),
+                    ], style={'display': 'none'}),
+
+                    html.Hr(),
+                    dbc.Row([
+                        dbc.Col([
+                            html.Label("Densità [kg/m³]"),
+                            dbc.Input(id="density-val", type="number", value=1.0, step=0.001, className="mb-3"),
+                        ]),
+                        dbc.Col([
+                            html.Label("Soglia Trip [A]"),
+                            dbc.Input(id="trip-limit", type="number", value=30, step=1, className="mb-3"),
+                        ])
+                    ]),
+                    
+                    dbc.Button("Genera mappa", id="process-btn", color="danger", className="w-100 mt-2"),
                 ])
             ], className="shadow-sm"),
             
             html.Div(id='status-message', className="mt-3"),
 
             html.Div([
-                html.H5("Info Debug", className="mt-4"),
+                html.H5("Analisi Modello", className="mt-4"),
                 dbc.Card([
                     dbc.CardBody(id="debug-info", style={"fontSize": "0.8rem", "fontFamily": "Courier New"})
                 ], color="light", className="shadow-sm")
@@ -83,129 +96,137 @@ layout = dbc.Container([
                 ])
             ], className="shadow-sm")
         ], width=8),
-    ], className="mt-4")
+    ], className="mt-4"),
+    dcc.Store(id='stored-df')
 ], fluid=True)
 
-# --- CALLBACKS UI ---
+# --- CALLBACK: POPOLAMENTO DROPDOWN ---
 @callback(
-    [Output("tag-box", "value"),
-     Output("hidden-copy-storage", "data")],
-    Input("pump-selector", "value")
-)
-def update_tag_display(selected_pump):
-    tags_dict = PUMP_CONFIG.get(selected_pump, {})
-    display_text = "\n".join([f"{tag}  <-- {desc}" for tag, desc in tags_dict.items()])
-    copy_text = "\n".join(tags_dict.keys())
-    return display_text, copy_text
-
-dash.clientside_callback(
-    """
-    function(n_clicks, text_to_copy) {
-        if (n_clicks > 0 && text_to_copy) {
-            navigator.clipboard.writeText(text_to_copy);
-            return "Copiato!";
-        }
-        return "Copia Nomi Punti";
-    }
-    """,
-    Output("copy-btn", "children"),
-    Input("copy-btn", "n_clicks"),
-    State("hidden-copy-storage", "data"),
+    [Output('col-current', 'options'), Output('col-rpm', 'options'),
+     Output('col-massflow', 'options'), Output('col-p-in', 'options'),
+     Output('col-p-out', 'options'), Output('column-selectors', 'style'),
+     Output('stored-df', 'data'), Output('status-message', 'children')],
+    Input('upload-data', 'contents'),
+    State('upload-data', 'filename'),
     prevent_initial_call=True
 )
-
-# --- CALLBACK PRINCIPALE ---
-@callback(
-    [Output('trip-map-plot', 'figure'),
-     Output('status-message', 'children'),
-     Output('debug-info', 'children')],
-    Input('process-btn', 'n_clicks'),
-    [State('upload-data', 'contents'),
-     State('trip-limit', 'value')],
-    prevent_initial_call=True
-)
-def update_graph(n_clicks, contents, trip_limit):
+def load_csv_columns(contents, filename):
     if not contents:
-        return go.Figure(), dbc.Alert("Attenzione: Caricare un file CSV.", color="warning"), ""
-
+        return [no_update]*7 + [""]
     try:
         content_type, content_string = contents.split(',')
         decoded = base64.b64decode(content_string)
         df = pd.read_csv(io.StringIO(decoded.decode('utf-8')))
-        df.columns = [c.strip().lower() for c in df.columns]
-        
-        required_cols = ['time', 'oil_temp', 'pump_massflow', 'pressure_jump', 'pump_current']
-        if not all(c in df.columns for c in required_cols):
-            return go.Figure(), dbc.Alert("Errore: colonne mancanti nel CSV.", color="danger"), ""
+        cols = [{'label': c, 'value': c} for c in df.columns]
+        return cols, cols, cols, cols, cols, {'display': 'block'}, df.to_dict('records'), dbc.Alert(f"File caricato: {filename}", color="info")
+    except Exception as e:
+        return [no_update]*7 + [dbc.Alert(f"Errore: {str(e)}", color="danger")]
+    
+    
+@callback(
+    [Output('trip-map-plot', 'figure'),
+     Output('status-message', 'children', allow_duplicate=True),
+     Output('debug-info', 'children')],
+    Input('process-btn', 'n_clicks'),
+    [State('stored-df', 'data'),
+     State('col-current', 'value'), State('curr-is-deci', 'value'),
+     State('col-rpm', 'value'), State('col-massflow', 'value'), 
+     State('col-p-in', 'value'), State('col-p-out', 'value'), 
+     State('density-val', 'value'), State('trip-limit', 'value')],
+    prevent_initial_call=True
+)
+def update_graph(n_clicks, data, col_i, is_deci, col_rpm, col_q, col_pin, col_pout, rho, trip_limit):
+    if not data or not all([col_i, col_rpm, col_q, col_pin, col_pout]):
+        return go.Figure(), dbc.Alert("Seleziona tutte le colonne.", color="warning"), ""
 
-        # Fitting del modello
-        df['mu'] = df.apply(lambda row: get_fluid_props(row['oil_temp'], row['pressure_jump']), axis=1)
-        X_data = (df['pump_massflow'].values, df['pressure_jump'].values, df['mu'].values)
-        I_measured = df['pump_current'].values
+    try:
+        df = pd.DataFrame(data)
+        dens = float(rho) if rho else 1000.0
+
+        # --- 1. PREPARAZIONE DATI (UNITÀ ORIGINALI PER IL PLOT) ---
+        df['I_A'] = pd.to_numeric(df[col_i], errors='coerce') / (10.0 if is_deci else 1.0)
+        df['P_bar'] = pd.to_numeric(df[col_pout]) - pd.to_numeric(df[col_pin])
+        df['Q_kgs'] = pd.to_numeric(df[col_q])
         
-        popt, _ = curve_fit(pump_physics_model, X_data, I_measured, bounds=(0, np.inf))
+        # Pulizia
+        df_fit = df[pd.to_numeric(df[col_rpm]) > 10].dropna(subset=['I_A', 'P_bar', 'Q_kgs']).copy()
+
+        # --- 2. CONVERSIONE SI PER IL FITTING ---
+        # Passiamo a Pascal e m3/s solo per dare "pasto" i dati al solver fisico
+        q_m3s = df_fit['Q_kgs'].values / dens
+        p_pa = df_fit['P_bar'].values * 1e5
+        mu_si = df_fit.apply(lambda row: get_fluid_props(40, row['P_bar']), axis=1).values
+        
+        X_data_si = (q_m3s, p_pa, mu_si)
+        I_measured = df_fit['I_A'].values
+
+        # Fitting
+        popt, _ = curve_fit(pump_physics_model, X_data_si, I_measured, bounds=(0, [1e2, 1e2, 1e9, 45]))
         k_hyd, k_leak, k_fric, offset = popt
-        r2_val = r2_score(I_measured, pump_physics_model(X_data, *popt))
+        r2_val = r2_score(I_measured, pump_physics_model(X_data_si, *popt))
 
-        # --- ANALISI AFFIDABILITÀ ---
-        warnings = []
-        if offset > 15:
-            warnings.append(html.Li("🚩 OFFSET ELEVATO: Assorbimento a vuoto stimato >15A. Possibili attriti fissi o dati mancanti a basso carico.", style={"color": "#d9534f"}))
-        if k_leak < 1e-10 or k_fric < 1e-10:
-            warnings.append(html.Li("🚩 COEFFICIENTI DEBOLI: I termini viscosi/perdite sono quasi nulli. Il modello è ipersemplificato.", style={"color": "#f0ad4e"}))
-        if r2_val < 0.85:
-            warnings.append(html.Li(f"🚩 FIT INCERTO (R²={r2_val:.2f}): Scostamento elevato tra modello e realtà.", style={"color": "#d9534f"}))
-
-        # Generazione Mappa
-        p_max, m_max = df['pressure_jump'].max() * 1.2, df['pump_massflow'].max() * 1.1
-        m_range, p_range = np.linspace(0, m_max, 50), np.linspace(0, p_max, 50)
-        M_GRID, P_GRID = np.meshgrid(m_range, p_range)
-        avg_temp = df['oil_temp'].mean()
+        # --- 3. GENERAZIONE MAPPA (UNITÀ PLOT: BAR e KG/S) ---
+        q_plot_max = df_fit['Q_kgs'].max() * 1.1
+        p_plot_max = df_fit['P_bar'].max() * 1.1
         
-        I_EXTRAP = np.zeros_like(M_GRID)
-        for i in range(len(p_range)):
-            mu = get_fluid_props(avg_temp, p_range[i])
-            for j in range(len(m_range)):
-                I_EXTRAP[i, j] = pump_physics_model((m_range[j], p_range[i], mu), *popt)
+        q_rng_plot = np.linspace(0, q_plot_max, 50)
+        p_rng_plot = np.linspace(0, p_plot_max, 50)
+        Q_GRID_PLOT, P_GRID_PLOT = np.meshgrid(q_rng_plot, p_rng_plot)
+        
+        I_MAP = np.zeros_like(Q_GRID_PLOT)
+        for i in range(len(p_rng_plot)):
+            # Convertiamo i punti della griglia in SI per usare il modello
+            p_pa_grid = p_rng_plot[i] * 1e5
+            mu_val = get_fluid_props(40, p_rng_plot[i])
+            for j in range(len(q_rng_plot)):
+                q_m3s_grid = q_rng_plot[j] / dens
+                I_MAP[i, j] = pump_physics_model((q_m3s_grid, p_pa_grid, mu_val), *popt)
 
+        c_min, c_max = min(I_MAP.min(), I_measured.min()), max(I_MAP.max(), I_measured.max())
+
+        # --- 4. PLOT IN BAR E KG/S ---
         fig = go.Figure()
         fig.add_trace(go.Contour(
-            z=I_EXTRAP, x=m_range, y=p_range, colorscale='Viridis', 
-            colorbar=dict(title="Corrente [A]")
+            z=I_MAP, x=q_rng_plot, y=p_rng_plot, colorscale='Viridis', zmin=c_min, zmax=c_max,
+            colorbar=dict(title="Corrente [A]"), opacity=0.7, hoverinfo='skip'
         ))
         fig.add_trace(go.Contour(
-            z=I_EXTRAP, x=m_range, y=p_range, showscale=False, 
-            contours=dict(start=trip_limit, end=trip_limit, coloring='none'), 
-            line=dict(color='red', width=4), name=f"Soglia Trip ({trip_limit}A)"
+            z=I_MAP, x=q_rng_plot, y=p_rng_plot, showscale=False,
+            contours=dict(start=trip_limit, end=trip_limit, coloring='none'),
+            line=dict(color='red', width=4), name="Trip"
         ))
-        fig.add_trace(go.Scatter(
-            x=df['pump_massflow'], y=df['pressure_jump'], mode='markers', 
-            marker=dict(color='white', size=5, opacity=0.6, line=dict(color='black', width=1)),
-            name='Punti Misurati'
+        fig.add_trace(go.Scattergl(
+            x=df_fit['Q_kgs'], y=df_fit['P_bar'], mode='markers',
+            marker=dict(color=df_fit['I_A'], colorscale='Viridis', cmin=c_min, cmax=c_max, size=8, line=dict(color='white', width=1)),
+            name='Dati Misurati'
         ))
 
         fig.update_layout(
-            xaxis_title="Portata Massa [g/s]", yaxis_title="Salto di Pressione [bar]",
-            template="plotly_white",
-            legend=dict(yanchor="top", y=0.98, xanchor="left", x=0.02, bgcolor="rgba(255, 255, 255, 0.7)")
+            xaxis=dict(title="Portata [kg/s]", range=[0, q_plot_max]),
+            yaxis=dict(title="ΔP [bar]", range=[0, p_plot_max]),
+            template="plotly_white"
+        )
+
+        # --- 5. INFO BOX ---
+        equation_md = (
+            "**Equazione del Modello (Fisica SI):**\n"
+            "$$I_{th} = k_{hyd}(P_{Pa} \\cdot Q_{m^3/s}) + k_{leak}(\\frac{P_{Pa}}{\\mu}) + k_{fric}(\\mu \\cdot Q_{m^3/s}) + Offset$$\n"
         )
 
         debug_content = html.Div([
-            html.B("MODELLO RISULTANTI:"),
+            dcc.Markdown(equation_md, mathjax=True),
             html.Ul([
-                html.Li(f"k_hyd: {k_hyd:.2e}"),
-                html.Li(f"k_leak: {k_leak:.2e}"),
-                html.Li(f"k_fric: {k_fric:.2e}"),
+                html.Li(f"k_hyd: {k_hyd:.2e} [A/W]"),
+                html.Li(f"k_leak: {k_leak:.2e} [A·s]"),
+                html.Li(f"k_fric: {k_fric:.2e} [A/(Pa·s·m³/s)]"),
                 html.Li(f"Offset: {offset:.2f} [A]"),
-                html.Li(f"R² Fit: {r2_val:.4f}"),
+                html.Li(f"R² Fit: {r2_val:.4f}")
             ]),
-            html.Div([
-                html.B("ANALISI TECNICA:"),
-                html.Ul(warnings if warnings else [html.Li("✅ Modello coerente con i dati.", style={"color": "green"})])
-            ], style={"marginTop": "10px", "borderTop": "1px solid #ddd", "paddingTop": "10px"})
+            html.P(f"Assi Grafico: P [bar], Q [kg/s]. Calcolo interno eseguito con densità {dens} kg/m³.", 
+                   style={"fontSize": "0.8rem", "color": "gray"})
         ])
 
-        return fig, dbc.Alert("Mappa aggiornata", color="success"), debug_content
+        return fig, dbc.Alert("Mappa aggiornata (Bar, kg/s)", color="success"), debug_content
 
     except Exception as e:
-        return go.Figure(), dbc.Alert(f"Errore: {str(e)}", color="danger"), html.P("Errore calcolo.")
+        return go.Figure(), dbc.Alert(f"Errore: {str(e)}", color="danger"), ""
