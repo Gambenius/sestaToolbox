@@ -1,9 +1,8 @@
 import os, re, struct
+from datetime import datetime, timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import tkinter as tk
-from tkinter import filedialog
 
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State, no_update
@@ -66,33 +65,44 @@ def get_wbin_metadata(path):
                     'desc': cols[hdr_map.get('Comment', 2)] if 'Comment' in hdr_map else ""
                 })
 
-    # ───── DIGITAL (SAFE VERSION) ─────
+    # ───── DIGITAL (MAPPATURA TAG <-> DESCRIZIONE) ─────
     digital_channels = []
     group_idx = 0
 
     for line in part2.split('\n'):
         line = line.strip()
-        if not line:
-            continue
-        
-        if MARKER_DIG in line.upper():
-            continue
-        
-        if not line.upper().startswith('DIGITAL'):
+        if not line or MARKER_DIG in line.upper() or not line.upper().startswith('DIGITAL'):
             continue
         
         cols = line.split('\t')
-        v_col = next((i for i, c in enumerate(cols) if ',' in c), 1)
+        
+        # Cerchiamo la colonna dei tag (quella con le virgole)
+        try:
+            v_col = next((i for i, c in enumerate(cols) if ',' in c), 1)
+        except StopIteration:
+            continue 
 
         if v_col < len(cols):
+            # Split dei TAG (es. Z50XL108, Z50XU108...)
             tags = [t.strip() for t in cols[v_col].split(',') if t.strip()]
             
+            # Split delle DESCRIZIONI (es. Min ecc statica..., Reg ecc...)
+            # Usiamo la colonna successiva v_col + 1
+            descs = []
+            if len(cols) > (v_col + 1):
+                descs = [d.strip() for d in cols[v_col + 1].split(',')]
+
             for bit_idx, tag in enumerate(tags[:32]):
+                # Prendiamo la descrizione corrispondente per indice
+                # Se per qualche motivo il file ha meno descrizioni dei tag, evitiamo il crash
+                current_desc = descs[bit_idx] if bit_idx < len(descs) else ""
+                
                 digital_channels.append({
                     'tag': tag.upper(),
                     'group': group_idx,
                     'bit': bit_idx,
-                    'type': 'D'
+                    'type': 'D',
+                    'desc': current_desc # <--- ECCOLA QUI!
                 })
             
             group_idx += 1
@@ -143,14 +153,66 @@ def get_wbin_metadata(path):
 layout = dbc.Container([
     dcc.Store(id='wbin-config-store'),
     dcc.Store(id='wbin-zoom-store', data={'start': 0, 'end': None}),
-    dcc.Download(id="download-csv"), 
+    dcc.Store(id='wbin-selected-path'),
+    dcc.Download(id="download-csv"),
     dbc.Row([
         # Sidebar
         dbc.Col([
             html.Div([
                 html.H4("Lettore archiviazioni binarie", className="text-primary mb-4"),
                 
-                dbc.Button("📂 SELEZIONA BINARIO", id="wbin-btn-open", color="primary", outline=True, className="w-100 mb-3"),
+                dbc.Button(
+                    "📂 SELEZIONA BINARIO",
+                    id="wbin-btn-open-modal",
+                    color="primary",
+                    outline=True,
+                    className="w-100 mb-3",
+                ),
+
+                # Modal per selezione file da rete
+                dbc.Modal(
+                    [
+                        dbc.ModalHeader(dbc.ModalTitle("Seleziona File Binario da Rete")),
+                        dbc.ModalBody([
+                            html.Label("Seleziona Data (Cartella YYYY-MM-DD):", className="fw-bold mb-2"),
+                            dcc.DatePickerSingle(
+                                id="wbin-date-picker",
+                                date=datetime.now().date(),
+                                min_date_allowed=datetime(1990, 1, 1),
+                                max_date_allowed=datetime.now().date()+ timedelta(days=7),
+                                className="mb-3",
+                            ),
+                            html.Label("File .bin disponibili:", className="fw-bold mb-2"),
+                            dcc.Dropdown(
+                                id="wbin-file-dropdown",
+                                options=[],
+                                placeholder="Seleziona una data per caricare i file...",
+                                className="mb-3",
+                            ),
+                            html.Div(
+                                id="wbin-file-info-modal",
+                                className="small text-muted mb-3",
+                            ),
+                        ]),
+                        dbc.ModalFooter([
+                            dbc.Button(
+                                "❌ Chiudi",
+                                id="wbin-btn-close-modal",
+                                color="secondary",
+                                className="me-2",
+                            ),
+                            dbc.Button(
+                                "✅ Carica File Selezionato",
+                                id="wbin-btn-load-file",
+                                color="primary",
+                                disabled=True,
+                            ),
+                        ]),
+                    ],
+                    id="wbin-file-modal",
+                    backdrop="static",
+                    size="lg",
+                ),
                 
                 # Box Info File e Metadati (Sfondo chiaro, testo scuro)
                 html.Div(id="wbin-file-info", children=[
@@ -282,21 +344,100 @@ layout = dbc.Container([
 # 3. CALLBACKS
 # ─────────────────────────────────────────────────────────────────
 
+NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
+
+def format_file_size(size_bytes: int) -> str:
+    """Converte byte in formato leggibile (KB, MB, GB)."""
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+def list_bin_files(folder_path: str) -> list:
+    """Restituisce lista di file .bin con nome, data e dimensione."""
+    files = []
+    if not os.path.exists(folder_path):
+        return files
+    for f in os.listdir(folder_path):
+        if f.lower().endswith('.bin'):
+            full = os.path.join(folder_path, f)
+            try:
+                stat = os.stat(full)
+                mtime = datetime.fromtimestamp(stat.st_mtime)
+                files.append({
+                    'label': f"{f}  |  {mtime.strftime('%Y-%m-%d %H:%M')}  |  {format_file_size(stat.st_size)}",
+                    'value': full,
+                })
+            except:
+                files.append({'label': f, 'value': full})
+    files.sort(key=lambda x: x['value'])
+    return files
+
+# --- CALLBACK: APRI MODAL ---
 @callback(
-    [Output('wbin-config-store', 'data'), 
-     Output('wbin-file-info', 'children'), 
-     Output('wbin-status-msg', 'children')],
-    Input('wbin-btn-open', 'n_clicks'),
+    Output('wbin-file-modal', 'is_open'),
+    Input('wbin-btn-open-modal', 'n_clicks'),
+    Input('wbin-btn-close-modal', 'n_clicks'),
+    Input('wbin-btn-load-file', 'n_clicks'),
+    State('wbin-file-modal', 'is_open'),
     prevent_initial_call=True
 )
-def cb_open_file(n):
-    root = tk.Tk(); root.withdraw(); root.attributes('-topmost', True)
-    path = filedialog.askopenfilename()
-    root.destroy()
-    if not path: return no_update
-    
+def cb_toggle_modal(open_n, close_n, load_n, is_open):
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return False
+    prop = ctx.triggered[0]['prop_id']
+    if prop == 'wbin-btn-open-modal.n_clicks':
+        return True
+    # Chiude sempre il modal (chiusura o caricamento)
+    return False
+
+# --- CALLBACK: DATA → LISTA FILE .BIN ---
+@callback(
+    [Output('wbin-file-dropdown', 'options'),
+     Output('wbin-file-info-modal', 'children')],
+    Input('wbin-date-picker', 'date'),
+    prevent_initial_call=True
+)
+def cb_list_files(date_str):
+    if not date_str:
+        return [], ""
+    # date_str è ISO "YYYY-MM-DD"
+    dt = datetime.strptime(date_str, '%Y-%m-%d')
+    folder_name = dt.strftime('%Y%m%d')
+    folder_path = os.path.join(NETWORK_BASE_PATH, folder_name)
+    files = list_bin_files(folder_path)
+    if not files:
+        return [], html.Div("Nessun file .bin trovato nella cartella.", className="text-danger small")
+    return files, html.Div(f"{len(files)} file .bin trovati in {folder_name}", className="text-success small")
+
+# --- CALLBACK: FILE SELEZIONATO → ABILITA PULSANTE CARICA ---
+@callback(
+    [Output('wbin-btn-load-file', 'disabled'),
+     Output('wbin-selected-path', 'data')],
+    Input('wbin-file-dropdown', 'value'),
+    prevent_initial_call=True
+)
+def cb_select_file(selected_path):
+    if selected_path:
+        return False, selected_path
+    return True, None
+
+# --- CALLBACK: CARICA FILE SELEZIONATO (stessa logica di prima) ---
+@callback(
+    [Output('wbin-config-store', 'data'),
+     Output('wbin-file-info', 'children'),
+     Output('wbin-status-msg', 'children')],
+    Input('wbin-btn-load-file', 'n_clicks'),
+    State('wbin-selected-path', 'data'),
+    prevent_initial_call=True
+)
+def cb_load_file(n_clicks, selected_path):
+    if not selected_path or not os.path.exists(selected_path):
+        return no_update, no_update, dbc.Alert("File non valido o non trovato.", color="danger", className="small")
     try:
-        cfg = get_wbin_metadata(path)
+        cfg = get_wbin_metadata(selected_path)
         n_analog = cfg.get('n_analog', 0)
         n_digital = len(cfg.get('digital_channels', []))
         m = cfg.get('meta', {'campaign': 'N/A', 'customer': 'N/A', 'coordinator': 'N/A'})
@@ -305,9 +446,8 @@ def cb_open_file(n):
             dbc.CardHeader("INFORMAZIONI FILE", className="fw-bold small"),
             dbc.CardBody([
                 html.Div([
-                    html.P([html.B("File: "), os.path.basename(path)], className="mb-1 small"),
+                    html.P([html.B("File: "), os.path.basename(selected_path)], className="mb-1 small"),
                     html.P([html.B("Quantità dati: "), f"{cfg['total_blocks']:,}"], className="mb-1 small"),
-                    # --- Canali sdoppiati ---
                     html.P([html.B("Canali analogici: "), str(n_analog)], className="mb-1 small"),
                     html.P([html.B("Canali digitali: "), str(n_digital)], className="mb-3 small"),
                 ]),
@@ -315,10 +455,8 @@ def cb_open_file(n):
                 html.Div([
                     html.Label("CAMPAIGN", className="text-primary fw-bold", style={'fontSize': '10px'}),
                     html.P(m.get('campaign', 'N/A'), className="small mb-2"),
-                    
                     html.Label("CUSTOMER", className="text-primary fw-bold", style={'fontSize': '10px'}),
                     html.P(m.get('customer', 'N/A'), className="small mb-2"),
-                    
                     html.Label("COORDINATOR", className="text-primary fw-bold", style={'fontSize': '10px'}),
                     html.P(m.get('coordinator', 'N/A'), className="small"),
                 ])
