@@ -8,6 +8,13 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.ZEPHYR, dbc.icons.BOOTSTRAP]
 )
 
+# ORDINE PAGINE
+custom_order = ["Home",
+                "Lettore Arch. Binarie",
+                "Volumetric Pump Efficiency",
+                "Chemical Analysis",
+                "Pump Mapping"]
+
 # --- STILI AGGIORNATI ---
 SIDEBAR_STYLE = {
     "position": "fixed",
@@ -48,7 +55,6 @@ btn_toggle = dbc.Button(
         "borderRadius": "5px"
     }
 )
-
 sidebar = html.Div(
     [
         # Logo e Titolo
@@ -58,10 +64,13 @@ sidebar = html.Div(
         dbc.Nav(
             [
                 dbc.NavLink(
-                    f"{page['name']}", 
-                    href=page["relative_path"], 
-                    active="exact"
-                ) for page in dash.page_registry.values()
+                        f"{p['name']}", 
+                        href=p["relative_path"], 
+                        active="exact"
+                    ) for p in sorted(
+                        dash.page_registry.values(), 
+                        key=lambda p: custom_order.index(p["name"]) if p["name"] in custom_order else 999
+                    )
             ],
             vertical=True,
             pills=True,
