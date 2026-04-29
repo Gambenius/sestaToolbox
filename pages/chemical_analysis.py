@@ -9,7 +9,7 @@ from datetime import datetime
 import io
 import base64
 
-dash.register_page(__name__, name="Analisi Chimiche")
+dash.register_page(__name__, path="/chem")
 
 # --- COSTANTI CHIMICHE ---
 CHEM_DATA = {

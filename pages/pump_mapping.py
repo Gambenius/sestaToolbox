@@ -10,7 +10,7 @@ from CoolProp.CoolProp import PropsSI
 import io
 import base64
 
-dash.register_page(__name__, name="Mappa pompa vol.")
+dash.register_page(__name__, path="/pump-map")
 
 def pump_physics_model(X, k_hyd, k_leak, k_fric, offset):
     Q_vol, P_pa, mu_pas = X

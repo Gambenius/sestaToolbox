@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import io
 import base64
 
-dash.register_page(__name__, name="Analisi pompe", path='/analisi_pompe')
+dash.register_page(__name__, path='/pump-vol')
 
 def render_pump_config(id_prefix, title, color):
     """Genera il box di configurazione per una pompa con colonne separate per Giorno 1 e 2"""

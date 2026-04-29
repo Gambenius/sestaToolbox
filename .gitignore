@@ -213,3 +213,4 @@ __pycache__/
 *.log
 # Ignore data files if they are huge
 data/
+utils/complaints.txt

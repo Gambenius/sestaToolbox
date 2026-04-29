@@ -13,7 +13,8 @@ custom_order = ["Home",
                 "Lettore Arch. Binarie",
                 "Volumetric Pump Efficiency",
                 "Chemical Analysis",
-                "Pump Mapping"]
+                "Pump Mapping",
+                "Segnalazioni e Bug"]
 
 # --- STILI AGGIORNATI ---
 SIDEBAR_STYLE = {
@@ -63,18 +64,16 @@ sidebar = html.Div(
         html.P("Engineering Toolbox", className="lead", style={"fontSize": "1rem"}),
         dbc.Nav(
             [
-                dbc.NavLink(
-                        f"{p['name']}", 
-                        href=p["relative_path"], 
-                        active="exact"
-                    ) for p in sorted(
-                        dash.page_registry.values(), 
-                        key=lambda p: custom_order.index(p["name"]) if p["name"] in custom_order else 999
-                    )
+                dbc.NavLink("Home", href="/", active="exact"),
+                dbc.NavLink("Lettore Binari", href="/wbin", active="exact"),
+                dbc.NavLink("Pompe Volumetriche", href="/pump-vol", active="exact"),
+                dbc.NavLink("Armadi", href="/chem", active="exact"),
+                dbc.NavLink("Mappe Pompe", href="/pump-map", active="exact"),
+                dbc.NavLink("Segnalazioni e Bug", href="/feedback", active="exact"),
             ],
             vertical=True,
             pills=True,
-        ),
+        )
     ],
     id="sidebar",
     style=SIDEBAR_STYLE,

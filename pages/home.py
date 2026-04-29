@@ -1,7 +1,7 @@
 import dash
 from dash import html
 
-dash.register_page(__name__, path='/', name="Home")
+dash.register_page(__name__, path='/')
 
 layout = html.Div([
     html.H3("Benvenuti in sto schifo vibecodato. Se non funziona ditemelo"),

@@ -9,7 +9,7 @@ from dash import html, dcc, dash_table, callback, Input, Output, State, no_updat
 import dash_bootstrap_components as dbc
 
 # Registrazione della pagina
-dash.register_page(__name__, name="Lettore Arch. Binarie", path="/wbin")
+dash.register_page(__name__, path="/wbin")
 
 # ─────────────────────────────────────────────────────────────────
 # 1. LOGICA DI ESTRAZIONE METADATI (Mantenuta e rifinita)
