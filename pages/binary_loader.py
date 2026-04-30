@@ -218,7 +218,7 @@ layout = dbc.Container([
                 html.Div(id="wbin-file-info", children=[
                     dbc.Card([
                         dbc.CardBody([
-                            html.P("Carica un file prima :)", className="text-muted small mb-0")
+                            html.P("Al momento carica solo da ARCHIVI/TOTALE/PROVE", className="text-muted small mb-0")
                         ])
                     ], className="bg-light")
                 ], className="mb-3"),

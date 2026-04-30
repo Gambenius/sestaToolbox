@@ -8,14 +8,6 @@ app = dash.Dash(
     external_stylesheets=[dbc.themes.ZEPHYR, dbc.icons.BOOTSTRAP]
 )
 
-# ORDINE PAGINE
-custom_order = ["Home",
-                "Lettore Arch. Binarie",
-                "Volumetric Pump Efficiency",
-                "Chemical Analysis",
-                "Pump Mapping",
-                "Segnalazioni e Bug"]
-
 # --- STILI AGGIORNATI ---
 SIDEBAR_STYLE = {
     "position": "fixed",
@@ -69,6 +61,7 @@ sidebar = html.Div(
                 dbc.NavLink("Pompe Volumetriche", href="/pump-vol", active="exact"),
                 dbc.NavLink("Armadi", href="/chem", active="exact"),
                 dbc.NavLink("Mappe Pompe", href="/pump-map", active="exact"),
+                dbc.NavLink("PySR Regressore", href="/pysr-regressor", active="exact"),
                 dbc.NavLink("Segnalazioni e Bug", href="/feedback", active="exact"),
             ],
             vertical=True,
