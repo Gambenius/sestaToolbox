@@ -1018,23 +1018,29 @@ def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
     headers = ["Time"] + [get_tagname_from_sid(sid, cfg) for sid in selected_sids]
     rows = []
     today = date.today()
+
+    # Read first block to get start time for block index calculation
     with open(cfg['path'], 'rb') as f:
-        for b_idx in block_indices:  # ← must be this, NOT range(cfg['total_blocks'])
-            f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
+        f.seek(cfg['data_offset'])
+        first_record = f.read(cfg['block_size'])
+    h0, m0, s0 = first_record[4], first_record[5], first_record[6]
+    start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+    start_sec = h0 * 3600 + m0 * 60 + s0
+
+    rows = []
+    with open(cfg['path'], 'rb') as f:
+        for b_idx in range(cfg['total_blocks']):
+            f.seek(cfg['data_offset'] + (b_idx * cfg['block_size']))
             record = f.read(cfg['block_size'])
             if len(record) < cfg['block_size']:
                 break
             h, m, s = record[4], record[5], record[6]
-            curr_dt = datetime(today.year, today.month, today.day, h, m, s)
-            time_axis.append(curr_dt)
-            time_labels.append(f"{h:02d}:{m:02d}:{s:02d}")
-            
-            # Filtro temporale
+            curr_sec = h * 3600 + m * 60 + s
+
             if curr_sec < s_sec: continue
             if curr_sec > e_sec: break
-            
+
             row = [f"{h:02d}:{m:02d}:{s:02d}"]
-            
             for sid in selected_sids:
                 v_type, v_idx = sid.split('_')
                 idx = int(v_idx)
@@ -1046,7 +1052,7 @@ def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
                     ch = cfg['digital_channels'][idx]
                     dig_base = 13 + (cfg['n_analog'] * 4)
                     group_offset = dig_base + (ch['group'] * 4)
-                    full_word = struct.unpack('<I', record[group_offset : group_offset+4])[0]
+                    full_word = struct.unpack('<I', record[group_offset:group_offset+4])[0]
                     row.append((full_word >> ch['bit']) & 1)
             rows.append(row)
 
