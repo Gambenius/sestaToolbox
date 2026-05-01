@@ -231,7 +231,8 @@ layout = dbc.Container([
                     className="mb-4",
                     options=[],
                     searchable=True,
-                    # Non aggiungere altri parametri extra che potrebbero non essere supportati
+                    maxHeight=500,     
+                    optionHeight=35
                 ),
                 dbc.Button("Mostra grafico", id="wbin-btn-plot", color="primary", className="w-100 mb-3"),
                 

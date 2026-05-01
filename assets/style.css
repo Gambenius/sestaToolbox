@@ -1,0 +1,5 @@
+/* Espande la larghezza del menu a comparsa oltre i limiti del box */
+#wbin-tag-dropdown .Select-menu-outer {
+    min-width: 1600px !important;
+    width: auto !important;
+}
