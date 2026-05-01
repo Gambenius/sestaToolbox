@@ -174,14 +174,10 @@ layout = dbc.Container([
                 columnDefs=[
                     {"headerName": "ID", "field": "id", "width": 60},
                     {"headerName": "Nome", "field": "name", "editable": True},
-                    {"headerName": "Range (min,max)", "field": "range", "editable": True},
-                    {
-                        "headerName": "Linea", "field": "style", "editable": True,
-                        "cellEditor": "agSelectCellEditor",
-                        "cellEditorParams": {"values": ["solid", "dash", "dot", "dashdot"]}
-                    },
+                    {"headerName": "Range Min", "field": "rangeMIN", "editable": True},
+                    {"headerName": "Range Max", "field": "rangeMAX", "editable": True},
                 ],
-                rowData=[{'id': '1', 'name': 'Primary', 'range': 'Auto', 'style': 'solid'}],
+                rowData=[{'id': '1', 'name': 'Asse', 'range': 'Auto', 'style': 'solid'}],
                 dashGridOptions={"singleClickEdit": True}
             ),
             dbc.Button("+ Aggiungi Asse", id="wbin-add-axis-row", color="link", size="sm")
@@ -373,14 +369,6 @@ layout = dbc.Container([
                         }
                     },
                     {
-                        "headerName": "Asse",
-                        "field": "axis_id",
-                        "editable": True,
-                        "cellEditor": "agNumberCellEditor",
-                        "cellEditorParams": {"min": 1, "max": 10, "precision": 0},
-                        "width": 80
-                    },
-                    {
                         "headerName": "Valore",
                         "field": "cur_val",
                         "width": 100,
@@ -394,6 +382,18 @@ layout = dbc.Container([
                             ],
                             "defaultStyle": {"textAlign": "right"}
                         }
+                    },
+                    {
+                        "headerName": "Asse",
+                        "field": "axis_id",
+                        "width": 100,
+                        "editable": True,
+                        "cellEditor": "agSelectCellEditor",
+                        "cellEditorParams": {
+                            "values": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                            "openOnFocus": True, # Opens dropdown as soon as cell is active
+                        },
+                        "singleClickEdit": True, # Skips the "double click to edit" requirement
                     },
                     {
                         "headerName": "Rimuovi",
@@ -638,44 +638,81 @@ def cb_filter_tags(search, selected_values, cfg):
 
 @callback(
     [Output('wbin-main-graph', 'figure'),
-     Output('wbin-info-table', 'rowData')], 
+     Output('wbin-info-table', 'rowData'),
+     Output('wbin-axis-config-grid', 'rowData', allow_duplicate=True)], # Added this output
     [Input('wbin-btn-plot', 'n_clicks'),
      Input('wbin-main-graph', 'relayoutData'),
      Input('wbin-info-table', 'cellValueChanged')],
     [State('wbin-tag-dropdown', 'value'), 
      State('wbin-config-store', 'data'),
      State('wbin-info-table', 'rowData'),
-     State('wbin-axis-config-grid', 'rowData')], # From the Modal
+     State('wbin-axis-config-grid', 'rowData')],
     prevent_initial_call=True
 )
 def cb_render_graph(n_clicks, relayout_data, cell_changed, selected_indices, cfg, current_rows_state, axis_defs):
     if not selected_indices or not cfg:
-        return no_update, []
+        return go.Figure(), [], (axis_defs or [])
 
     current_rows = current_rows_state if current_rows_state is not None else []
+    axis_rows = axis_defs if axis_defs is not None else []
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id'].split('.')[1]
     today = datetime.now().date()
 
-    # --- 1. DATA FETCHING (Your original binary read) ---
+    # --- [1. DATA LOADING] ---
     with open(cfg['path'], 'rb') as f:
         f.seek(cfg['data_offset'])
         first_record = f.read(cfg['block_size'])
     h0, m0, s0 = first_record[4], first_record[5], first_record[6]
     start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+    
     start_block, end_block = 0, cfg['total_blocks'] - 1
-
     if trigger == 'relayoutData' and relayout_data:
         if 'xaxis.range[0]' in relayout_data:
-            x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'].replace('Z', ''))
-            x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'].replace('Z', ''))
-            start_block = max(0, int((x_start - start_dt).total_seconds()))
-            end_block = min(cfg['total_blocks'] - 1, int((x_end - start_dt).total_seconds()))
-        elif any(k in relayout_data for k in ['xaxis.autorange', 'autosize']):
-            start_block, end_block = 0, cfg['total_blocks'] - 1
-        else: return no_update, no_update
+            try:
+                x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'].replace('Z', ''))
+                x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'].replace('Z', ''))
+                start_block = max(0, int((x_start - start_dt).total_seconds()))
+                end_block = min(cfg['total_blocks'] - 1, int((x_end - start_dt).total_seconds()))
+            except: pass
 
-    n_pts = 600
+    # --- [2. ROW SYNC & NEW AXIS CREATION] ---
+    colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3', '#FF6692', '#B6E880']
+    new_rows = []
+    for i, sid in enumerate(selected_indices):
+        existing = next((r for r in current_rows if r.get('sid') == sid), None)
+        if existing:
+            existing['axis_id'] = int(existing.get('axis_id', 1))
+            new_rows.append(existing)
+        else:
+            v_type, v_idx = sid.split('_')
+            ch_info = cfg['analog_channels'][int(v_idx)] if v_type == 'A' else cfg['digital_channels'][int(v_idx)]
+            new_rows.append({
+                "sid": sid, "tag": ch_info['tag'], "color": colors[i % len(colors)], 
+                "axis_id": 1, "delete-row": "✘"
+            })
+    current_rows = new_rows
+
+    # Check for new axes that aren't in the config yet
+    used_ids = set(int(r['axis_id']) for r in current_rows)
+    existing_config_ids = set(int(a['id']) for a in axis_rows)
+    
+    for aid in used_ids:
+        if aid not in existing_config_ids:
+            # Create new entry in axis configuration
+            axis_rows.append({"id": aid, "name": f"Asse {aid}", "range": "Auto"})
+    
+    # Sort axis configuration by ID
+    axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
+    ax_map = {str(a['id']): a for a in axis_rows}
+
+    # --- [3. PLOT CONSTRUCTION] ---
+    fig = go.Figure()
+    used_ids_int = sorted(list(used_ids))
+    num_subplots = len(used_ids_int)
+
+    # Re-extracting data (keeping your logic)
+    n_pts = 10
     actual_range = end_block - start_block
     block_indices = np.linspace(start_block, end_block, min(n_pts, actual_range + 1)).astype(int)
     data_dict = {sid: [] for sid in selected_indices}
@@ -686,77 +723,82 @@ def cb_render_graph(n_clicks, relayout_data, cell_changed, selected_indices, cfg
             f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
             record = f.read(cfg['block_size'])
             if len(record) < cfg['block_size']: break
-            dt = start_dt + timedelta(seconds=int(b_idx))
-            time_axis.append(dt)
+            time_axis.append(start_dt + timedelta(seconds=int(b_idx)))
             for sid in selected_indices:
                 v_type, v_idx = sid.split('_')
                 idx = int(v_idx)
                 if v_type == 'A':
-                    offset = 13 + (idx * 4)
-                    val = struct.unpack('>f', record[offset:offset+4])[0]
+                    val = struct.unpack('>f', record[13+(idx*4):13+(idx*4)+4])[0]
                     data_dict[sid].append(val if abs(val) < 1e15 else 0.0)
                 else:
-                    data_dict[sid].append(0) # Logic for digital here
+                    ch = cfg['digital_channels'][idx]
+                    raw_word = record[13+(cfg['n_analog']*4)+(ch['group']*4):13+(cfg['n_analog']*4)+(ch['group']*4)+4]
+                    data_dict[sid].append((struct.unpack('<I', raw_word)[0] >> ch['bit']) & 1)
 
-    # --- 2. SYNC TABLE (Restore descriptions!) ---
-    ax_map = {str(a['id']): a for a in (axis_defs or [])}
-    colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3', '#FF6692', '#B6E880']
-    new_rows = []
-    for i, sid in enumerate(selected_indices):
-        existing = next((r for r in current_rows if r.get('sid') == sid), None)
-        if existing:
-            new_rows.append(existing)
-        else:
-            v_type, v_idx = sid.split('_')
-            idx = int(v_idx)
-            ch_info = cfg['analog_channels'][idx] if v_type == 'A' else cfg['digital_channels'][idx]
-            new_rows.append({
-                "sid": sid, "tag": ch_info['tag'], "desc": ch_info.get('desc', 'N/A'),
-                "color": colors[i % len(colors)], "axis_id": 1, "delete-row": "✘"
-            })
-    current_rows = new_rows
-
-    # --- 3. BUILD FIGURE ---
-    fig = go.Figure()
-    used_axes = set()
     for row in current_rows:
-        aid = str(row.get('axis_id', '1'))
-        used_axes.add(aid)
-        line_style = ax_map.get(aid, {}).get('style', 'solid')
-        
+        aid = str(row['axis_id'])
         fig.add_trace(go.Scattergl(
             x=time_axis, y=data_dict[row['sid']], name=row['tag'],
             yaxis=f"y{aid}" if aid != '1' else "y",
-            line=dict(color=row['color'], width=1.5, dash=line_style)
+            line=dict(color=row['color'], width=1.5),
+            showlegend=False,
+            hovertemplate="<b>" + row['tag'] + "</b>: %{y:.3f}<extra></extra>"
         ))
 
-    # --- 4. LAYOUT ---
-    layout_update = {
-        "xaxis": {"domain": [0.3, 1], "title": "Orario", "tickformat": "%H:%M:%S", "gridcolor": "#eee"},
-        "template": "plotly_white", "hovermode": "x unified", "uirevision": True
+    # --- [4. LAYOUT & DIY LEGEND] ---
+    spacing = 0.08
+    p_height = (1.0 - (spacing * (max(1, num_subplots - 1)))) / max(1, num_subplots)
+    
+    layout = {
+        "template": "plotly_white", "hovermode": "x unified", "hoverdistance": -1,
+        "autosize": True, 
+        "margin": dict(t=30, b=50, l=100, r=200), # Increased Right Margin to fit labels
+        "uirevision": True,
+        "showlegend": False,
+        "annotations": [],
+        "xaxis": {"title": "Orario", "tickformat": "%H:%M:%S", "gridcolor": "#eee", "showspikes": True}
     }
 
-    for i, aid in enumerate(sorted(list(used_axes), key=int)):
+    for i, aid_int in enumerate(used_ids_int):
+        aid = str(aid_int)
         ax_key = f"yaxis{aid}" if aid != '1' else "yaxis"
-        conf = ax_map.get(aid, {'name': f'Asse {aid}', 'range': 'Auto'})
+        ref_key = f"y{aid}" if aid != '1' else "y"
         
-        try:
-            low, high = map(float, str(conf.get('range')).replace(' ', '').split(','))
-            rng_set = {"range": [low, high], "autorange": False}
-        except:
-            rng_set = {"autorange": True}
+        start_y = max(0, 1.0 - ((i + 1) * p_height) - (i * spacing))
+        end_y = min(1.0, start_y + p_height)
+        mid_y = start_y + (p_height / 2)
 
-        layout_update[ax_key] = {
-            "side": "left", "anchor": "free", "position": 0.3 - (i * 0.08),
-            "overlaying": "y" if i > 0 else None,
-            "title": {"text": conf.get('name'), "standoff": 20},
-            "showgrid": True if i == 0 else False,
-            "nticks": 10,
-            **rng_set
+        # Build legend labels for this specific subplot
+        subplot_rows = [r for r in current_rows if int(r['axis_id']) == aid_int]
+        for j, row in enumerate(subplot_rows):
+            # Spread names vertically if multiple lines share an axis
+            y_offset = (len(subplot_rows)/2 - j) * 0.035 
+            
+            layout["annotations"].append(dict(
+                x=1.02, # Position slightly off the plot edge
+                y=mid_y + y_offset, 
+                xref="paper", yref="paper",
+                text=f"<b>{row['tag']}</b>",
+                showarrow=False,
+                font=dict(color=row['color'], size=11),
+                xanchor="left"
+            ))
+
+        conf = ax_map.get(aid, {})
+        layout[ax_key] = {
+            "domain": [start_y, end_y],
+            "title": {"text": conf.get('name', f'Asse {aid}'), "font": {"size": 12}},
+            "showgrid": True, "showticklabels": True, "matches": "x"
         }
 
-    fig.update_layout(layout_update)
-    return fig, current_rows
+        if i == num_subplots - 1:
+            layout["xaxis"]["anchor"] = ref_key
+
+    fig.update_layout(layout)
+    fig.update_traces(xaxis="x")
+    
+    return fig, current_rows, axis_rows
+
 
 @callback(
     Output("wbin-axis-modal", "is_open"),
@@ -769,7 +811,7 @@ def toggle_axis_modal(n1, n2, is_open):
     return is_open
 
 @callback(
-    Output("wbin-axis-config-grid", "rowData"),
+    Output("wbin-axis-config-grid", "rowData", allow_duplicate=True),
     Input("wbin-add-axis-row", "n_clicks"),
     State("wbin-axis-config-grid", "rowData"),
     prevent_initial_call=True
