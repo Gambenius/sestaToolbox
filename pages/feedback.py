@@ -14,12 +14,12 @@ layout = dbc.Container([
     dbc.Card(
         dbc.CardBody([
             dbc.Label("Oggetto"),
-            dbc.Input(id="feedback-subject", placeholder="Es: Bug caricamento file binario", type="text", className="mb-3"),
+            dbc.Input(id="feedback-subject", placeholder="Sto codice è lezzo!", type="text", className="mb-3"),
             
             dbc.Label("Contenuto della richiesta"),
             dbc.Textarea(
                 id="feedback-content",
-                placeholder="Descrivi dettagliatamente cosa vorresti aggiungere o il bug riscontrato...",
+                placeholder="s'è trovato un baho, vedrai",
                 style={'height': '200px'},
                 className="mb-3"
             ),
