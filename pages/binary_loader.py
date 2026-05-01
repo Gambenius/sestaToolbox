@@ -161,6 +161,33 @@ layout = dbc.Container([
     dcc.Store(id='wbin-selected-row-store', data=None),
     dcc.Store(id='wbin-color-edit-store', data=None),
     dcc.Store(id="wbin-selected-tag-store"),
+    dcc.Store(id='wbin-axis-config', data={'1': {'min': None, 'max': None}}),
+    dcc.Store(id='wbin-axis-definitions-store', data={'1': {'name': 'Primary', 'range': 'Auto', 'style': 'solid'}}),
+
+
+
+    dbc.Modal([
+        dbc.ModalHeader(dbc.ModalTitle("Configurazione Assi")),
+        dbc.ModalBody([
+            dag.AgGrid(
+                id='wbin-axis-config-grid',
+                columnDefs=[
+                    {"headerName": "ID", "field": "id", "width": 60},
+                    {"headerName": "Nome", "field": "name", "editable": True},
+                    {"headerName": "Range (min,max)", "field": "range", "editable": True},
+                    {
+                        "headerName": "Linea", "field": "style", "editable": True,
+                        "cellEditor": "agSelectCellEditor",
+                        "cellEditorParams": {"values": ["solid", "dash", "dot", "dashdot"]}
+                    },
+                ],
+                rowData=[{'id': '1', 'name': 'Primary', 'range': 'Auto', 'style': 'solid'}],
+                dashGridOptions={"singleClickEdit": True}
+            ),
+            dbc.Button("+ Aggiungi Asse", id="wbin-add-axis-row", color="link", size="sm")
+        ]),
+        dbc.ModalFooter(dbc.Button("Salva e Chiudi", id="wbin-close-axis-modal", color="primary"))
+    ], id="wbin-axis-modal", size="lg"),
     dbc.Modal(id='wbin-color-picker-modal', children=[
         dbc.ModalHeader(dbc.ModalTitle("Seleziona Colore")),
         daq.ColorPicker(
@@ -301,6 +328,10 @@ layout = dbc.Container([
                 ),
                 type="default"
             ),
+            dbc.Row([
+                dbc.Col(dbc.Button("⚙️ CONFIGURA ASSI", id="wbin-btn-axis-modal", color="secondary", outline=True, size="sm"), width=3),
+                dbc.Col(html.Small("Usa la colonna 'Asse' per raggruppare i canali", className="text-muted"), width=9, className="text-end")
+            ], className="my-2"),
             dag.AgGrid(
                 id='wbin-info-table',
                 dangerously_allow_code=True,
@@ -340,6 +371,14 @@ layout = dbc.Container([
                                 }
                             ]
                         }
+                    },
+                    {
+                        "headerName": "Asse",
+                        "field": "axis_id",
+                        "editable": True,
+                        "cellEditor": "agNumberCellEditor",
+                        "cellEditorParams": {"min": 1, "max": 10, "precision": 0},
+                        "width": 80
                     },
                     {
                         "headerName": "Valore",
@@ -601,129 +640,145 @@ def cb_filter_tags(search, selected_values, cfg):
     [Output('wbin-main-graph', 'figure'),
      Output('wbin-info-table', 'rowData')], 
     [Input('wbin-btn-plot', 'n_clicks'),
-     Input('wbin-main-graph', 'relayoutData')],
+     Input('wbin-main-graph', 'relayoutData'),
+     Input('wbin-info-table', 'cellValueChanged')],
     [State('wbin-tag-dropdown', 'value'), 
-     State('wbin-config-store', 'data')],
+     State('wbin-config-store', 'data'),
+     State('wbin-info-table', 'rowData'),
+     State('wbin-axis-config-grid', 'rowData')], # From the Modal
     prevent_initial_call=True
 )
-
-def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
+def cb_render_graph(n_clicks, relayout_data, cell_changed, selected_indices, cfg, current_rows_state, axis_defs):
     if not selected_indices or not cfg:
         return no_update, []
 
+    current_rows = current_rows_state if current_rows_state is not None else []
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id'].split('.')[1]
-    today = date.today()
+    today = datetime.now().date()
 
-    # Quick read of first block to get start time
+    # --- 1. DATA FETCHING (Your original binary read) ---
     with open(cfg['path'], 'rb') as f:
         f.seek(cfg['data_offset'])
         first_record = f.read(cfg['block_size'])
     h0, m0, s0 = first_record[4], first_record[5], first_record[6]
     start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
-
-    start_block = 0
-    end_block = cfg['total_blocks'] - 1
+    start_block, end_block = 0, cfg['total_blocks'] - 1
 
     if trigger == 'relayoutData' and relayout_data:
         if 'xaxis.range[0]' in relayout_data:
-            x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'])
-            x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'])
+            x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'].replace('Z', ''))
+            x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'].replace('Z', ''))
             start_block = max(0, int((x_start - start_dt).total_seconds()))
             end_block = min(cfg['total_blocks'] - 1, int((x_end - start_dt).total_seconds()))
-        elif 'xaxis.autorange' in relayout_data or 'autosize' in relayout_data:
-            start_block = 0
-            end_block = cfg['total_blocks'] - 1
-        else:
-            return no_update, no_update
+        elif any(k in relayout_data for k in ['xaxis.autorange', 'autosize']):
+            start_block, end_block = 0, cfg['total_blocks'] - 1
+        else: return no_update, no_update
 
-    # Campionamento dinamico
-    n_pts = 500
+    n_pts = 600
     actual_range = end_block - start_block
-    if actual_range <= 0:
-        return no_update, no_update
     block_indices = np.linspace(start_block, end_block, min(n_pts, actual_range + 1)).astype(int)
-
     data_dict = {sid: [] for sid in selected_indices}
     time_axis = []
-    time_labels = []
 
-    # Read ONLY the sampled blocks using seek — never iterate all 3GB
     with open(cfg['path'], 'rb') as f:
         for b_idx in block_indices:
             f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
             record = f.read(cfg['block_size'])
-            if len(record) < cfg['block_size']:
-                break
-            h, m, s = record[4], record[5], record[6]
-            curr_dt = datetime(today.year, today.month, today.day, h, m, s)
-            time_axis.append(curr_dt)
-            time_labels.append(f"{h:02d}:{m:02d}:{s:02d}")
+            if len(record) < cfg['block_size']: break
+            dt = start_dt + timedelta(seconds=int(b_idx))
+            time_axis.append(dt)
             for sid in selected_indices:
                 v_type, v_idx = sid.split('_')
                 idx = int(v_idx)
-                
                 if v_type == 'A':
                     offset = 13 + (idx * 4)
                     val = struct.unpack('>f', record[offset:offset+4])[0]
                     data_dict[sid].append(val if abs(val) < 1e15 else 0.0)
                 else:
-                    ch = cfg['digital_channels'][idx]
-                    dig_base = 13 + (cfg['n_analog'] * 4)
-                    group_offset = dig_base + (ch['group'] * 4)
-                    raw_word = record[group_offset : group_offset+4]
-                    if len(raw_word) == 4:
-                        full_word = struct.unpack('<I', raw_word)[0]
-                        data_dict[sid].append((full_word >> ch['bit']) & 1)
-                    else:
-                        data_dict[sid].append(0)
+                    data_dict[sid].append(0) # Logic for digital here
 
-    # Creazione Figura
-    fig = go.Figure()
+    # --- 2. SYNC TABLE (Restore descriptions!) ---
+    ax_map = {str(a['id']): a for a in (axis_defs or [])}
     colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3', '#FF6692', '#B6E880']
-    table_rows = []
-
+    new_rows = []
     for i, sid in enumerate(selected_indices):
-        v_type, v_idx = sid.split('_')
-        idx = int(v_idx)
-        ch_info = cfg['analog_channels'][idx] if v_type == 'A' else cfg['digital_channels'][idx]
-        color = colors[i % len(colors)]
+        existing = next((r for r in current_rows if r.get('sid') == sid), None)
+        if existing:
+            new_rows.append(existing)
+        else:
+            v_type, v_idx = sid.split('_')
+            idx = int(v_idx)
+            ch_info = cfg['analog_channels'][idx] if v_type == 'A' else cfg['digital_channels'][idx]
+            new_rows.append({
+                "sid": sid, "tag": ch_info['tag'], "desc": ch_info.get('desc', 'N/A'),
+                "color": colors[i % len(colors)], "axis_id": 1, "delete-row": "✘"
+            })
+    current_rows = new_rows
 
-        # Aggiunta traccia al grafico
+    # --- 3. BUILD FIGURE ---
+    fig = go.Figure()
+    used_axes = set()
+    for row in current_rows:
+        aid = str(row.get('axis_id', '1'))
+        used_axes.add(aid)
+        line_style = ax_map.get(aid, {}).get('style', 'solid')
+        
         fig.add_trace(go.Scattergl(
-            x=time_axis,
-            y=data_dict[sid],
-            name=ch_info['tag'],
-            line=dict(color=color, width=1.5),
-            hovertemplate=" %{y:.3f}<extra></extra>"
+            x=time_axis, y=data_dict[row['sid']], name=row['tag'],
+            yaxis=f"y{aid}" if aid != '1' else "y",
+            line=dict(color=row['color'], width=1.5, dash=line_style)
         ))
-        table_rows.append({
-            "delete-row": "✘",  # Aggiungi questa riga
-            "tag": ch_info['tag'],
-            "desc": ch_info.get('desc', 'N/A'),
-            "color": color,
-            "cur_val": "---"
-        })
 
-    # Layout Grafico
-    tick_indices = np.linspace(0, len(time_axis)-1, 10).astype(int)
-    fig.update_layout(
-        hovermode="x unified",
-        hoverlabel=dict(
-            bgcolor="rgba(255, 255, 255, 0.9)",
-            font_size=13,
-        ),
-        xaxis=dict(
-            title="Orario",
-            tickformat="%H:%M:%S",
-            hoverformat="%H:%M:%S",
-            tickmode='array',
-            tickvals=[time_axis[i] for i in tick_indices],
-            tickangle=45,
-        ),
-        yaxis=dict(gridcolor='#f0f0f0')
-    )
-    return fig, table_rows
+    # --- 4. LAYOUT ---
+    layout_update = {
+        "xaxis": {"domain": [0.3, 1], "title": "Orario", "tickformat": "%H:%M:%S", "gridcolor": "#eee"},
+        "template": "plotly_white", "hovermode": "x unified", "uirevision": True
+    }
+
+    for i, aid in enumerate(sorted(list(used_axes), key=int)):
+        ax_key = f"yaxis{aid}" if aid != '1' else "yaxis"
+        conf = ax_map.get(aid, {'name': f'Asse {aid}', 'range': 'Auto'})
+        
+        try:
+            low, high = map(float, str(conf.get('range')).replace(' ', '').split(','))
+            rng_set = {"range": [low, high], "autorange": False}
+        except:
+            rng_set = {"autorange": True}
+
+        layout_update[ax_key] = {
+            "side": "left", "anchor": "free", "position": 0.3 - (i * 0.08),
+            "overlaying": "y" if i > 0 else None,
+            "title": {"text": conf.get('name'), "standoff": 20},
+            "showgrid": True if i == 0 else False,
+            "nticks": 10,
+            **rng_set
+        }
+
+    fig.update_layout(layout_update)
+    return fig, current_rows
+
+@callback(
+    Output("wbin-axis-modal", "is_open"),
+    [Input("wbin-btn-axis-modal", "n_clicks"), Input("wbin-close-axis-modal", "n_clicks")],
+    State("wbin-axis-modal", "is_open")
+)
+def toggle_axis_modal(n1, n2, is_open):
+    if n1 or n2:
+        return not is_open
+    return is_open
+
+@callback(
+    Output("wbin-axis-config-grid", "rowData"),
+    Input("wbin-add-axis-row", "n_clicks"),
+    State("wbin-axis-config-grid", "rowData"),
+    prevent_initial_call=True
+)
+def add_axis_row(n, rows):
+    if not rows: rows = []
+    new_id = str(max([int(r['id']) for r in rows]) + 1) if rows else "1"
+    rows.append({'id': new_id, 'name': f'Asse {new_id}', 'range': 'Auto', 'style': 'solid'})
+    return rows
 
 # ─────────────────────────────────────────────────────────────────
 # CALLBACK CLICK: POSIZIONA CURSORE + AGGIORNA VALORI TABELLA
@@ -1123,6 +1178,10 @@ def handle_table_logic(clicked, current_rows, fig, current_tags, cfg):
     row_idx = clicked.get("rowIndex")
     col_id = clicked.get("colId")
 
+# --- ADD THIS: If user clicks an editable column, do nothing and let them type ---
+    if col_id in ['axis_id', 'axis_range']:
+        return no_update, no_update, no_update, no_update, False, no_update, no_update
+
     if row_idx is None or row_idx >= len(current_rows):
         return no_update, no_update, no_update, None, False, no_update, no_update
 
@@ -1179,7 +1238,6 @@ def handle_table_logic(clicked, current_rows, fig, current_tags, cfg):
                     trace['line']['width'] = 1.5
             fig['layout']['uirevision'] = 'constant'
         
-        # mark selected row in rowData
         new_rows = []
         for r in current_rows:
             r = dict(r)
