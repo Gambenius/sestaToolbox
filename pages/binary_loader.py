@@ -304,13 +304,14 @@ layout = dbc.Container([
             dag.AgGrid(
                 id='wbin-info-table',
                 dangerously_allow_code=True,
-                columnSize="responsiveSizeToFit",
+                # columnSize="responsiveSizeToFit",
                 columnDefs=[
                     {
-                    "headerName": "",
-                    "field": "color",
-                    "width": 60,
-                    "suppressSizeToFit": True,  # keeps it exactly 60px
+                        "headerName": "🎨   ",
+                        "field": "color",
+                        "width": 60,
+                        "resizable": False,
+                        "suppressSizeToFit": True,  # keeps it exactly 60px
                     },
                     {
                         "headerName": "Tag",
@@ -330,7 +331,7 @@ layout = dbc.Container([
                         "headerName": "Descrizione",
                         "field": "desc",
                         "resizable": True,
-                        "flex": 1,  # fills remaining space
+                        "flex": 2,  # fills remaining space
                         "cellStyle": {
                             "styleConditions": [
                                 {
@@ -344,23 +345,22 @@ layout = dbc.Container([
                         "headerName": "Valore",
                         "field": "cur_val",
                         "width": 100,
-                        "suppressSizeToFit": True, 
-                        "resizable": False,
+                        "resizable": True,
                         "cellStyle": {
-                            "textAlign": "right",
                             "styleConditions": [
                                 {
                                     "condition": "params.data._selected === true",
-                                    "style": {"fontWeight": "bold"}
+                                    "style": {"fontWeight": "bold", "textAlign": "right"}
                                 }
-                            ]
+                            ],
+                            "defaultStyle": {"textAlign": "right"}
                         }
                     },
                     {
                         "headerName": "Rimuovi",
                         "field": "delete-row",
                         "width": 90,
-                        "suppressSizeToFit": True,
+                        "suppressSizeToFit": False,
                         "resizable": False,
                         "cellStyle": {
                             "cursor": "pointer",
@@ -608,45 +608,57 @@ def cb_filter_tags(search, selected_values, cfg):
 )
 
 def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
-    if not selected_indices or not cfg: 
+    if not selected_indices or not cfg:
         return no_update, []
-    
+
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id'].split('.')[1]
+    today = date.today()
 
-    # Gestione Range blocchi
+    # Quick read of first block to get start time
+    with open(cfg['path'], 'rb') as f:
+        f.seek(cfg['data_offset'])
+        first_record = f.read(cfg['block_size'])
+    h0, m0, s0 = first_record[4], first_record[5], first_record[6]
+    start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+
     start_block = 0
     end_block = cfg['total_blocks'] - 1
 
     if trigger == 'relayoutData' and relayout_data:
         if 'xaxis.range[0]' in relayout_data:
-            start_block = max(0, int(float(relayout_data['xaxis.range[0]'])))
-            end_block = min(cfg['total_blocks'] - 1, int(float(relayout_data['xaxis.range[1]'])))
-        elif 'xaxis.autorange' in relayout_data:
+            x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'])
+            x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'])
+            start_block = max(0, int((x_start - start_dt).total_seconds()))
+            end_block = min(cfg['total_blocks'] - 1, int((x_end - start_dt).total_seconds()))
+        elif 'xaxis.autorange' in relayout_data or 'autosize' in relayout_data:
             start_block = 0
             end_block = cfg['total_blocks'] - 1
-        else: 
+        else:
             return no_update, no_update
 
-    # Campionamento dinamico (max 1200 punti per fluidità)
-    n_pts = 1200
+    # Campionamento dinamico
+    n_pts = 500
     actual_range = end_block - start_block
+    if actual_range <= 0:
+        return no_update, no_update
     block_indices = np.linspace(start_block, end_block, min(n_pts, actual_range + 1)).astype(int)
 
     data_dict = {sid: [] for sid in selected_indices}
     time_axis = []
     time_labels = []
 
-    # Lettura Binaria
+    # Read ONLY the sampled blocks using seek — never iterate all 3GB
     with open(cfg['path'], 'rb') as f:
         for b_idx in block_indices:
             f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
             record = f.read(cfg['block_size'])
-            if len(record) < cfg['block_size']: break
-            
-            time_axis.append(b_idx)
-            time_labels.append(f"{record[4]:02d}:{record[5]:02d}:{record[6]:02d}")
-
+            if len(record) < cfg['block_size']:
+                break
+            h, m, s = record[4], record[5], record[6]
+            curr_dt = datetime(today.year, today.month, today.day, h, m, s)
+            time_axis.append(curr_dt)
+            time_labels.append(f"{h:02d}:{m:02d}:{s:02d}")
             for sid in selected_indices:
                 v_type, v_idx = sid.split('_')
                 idx = int(v_idx)
@@ -679,19 +691,12 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
 
         # Aggiunta traccia al grafico
         fig.add_trace(go.Scattergl(
-            x=time_axis, 
-            y=data_dict[sid], 
+            x=time_axis,
+            y=data_dict[sid],
             name=ch_info['tag'],
-            # Questo è fondamentale: permette a %{text} di funzionare nell'hover
-            customdata=time_labels, 
             line=dict(color=color, width=1.5),
-            # Rimuoviamo l'orario dalla riga singola (lo abbiamo già nel titolo sopra)
-            hovertemplate="<span style='color:inherit'></span> %{y:.3f}<extra></extra>"
+            hovertemplate=" %{y:.3f}<extra></extra>"
         ))
-        fig.update_traces(
-            customdata=time_labels,
-            hovertemplate="<span style='color:inherit'></span> %{y:.3f}<extra></extra>"
-        )
         table_rows.append({
             "delete-row": "✘",  # Aggiungi questa riga
             "tag": ch_info['tag'],
@@ -702,7 +707,6 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
 
     # Layout Grafico
     tick_indices = np.linspace(0, len(time_axis)-1, 10).astype(int)
-
     fig.update_layout(
         hovermode="x unified",
         hoverlabel=dict(
@@ -710,15 +714,12 @@ def cb_render_graph(n_clicks, relayout_data, selected_indices, cfg):
             font_size=13,
         ),
         xaxis=dict(
-            title="Orario", tickmode='array',
+            title="Orario",
+            tickformat="%H:%M:%S",
+            hoverformat="%H:%M:%S",
+            tickmode='array',
             tickvals=[time_axis[i] for i in tick_indices],
-            ticktext=[time_labels[i] for i in tick_indices],
             tickangle=45,
-            unifiedhovertitle=dict(
-                # Usiamo %{text} perché lì abbiamo salvato HH:MM:SS nel Scattergl
-
-                text='<b>Ora: %{customdata}</b>'
-            ),
         ),
         yaxis=dict(gridcolor='#f0f0f0')
     )
@@ -739,20 +740,18 @@ def update_on_click(clickData, current_table, fig):
     if not clickData or not current_table or not fig:
         return no_update, no_update
 
-    # 1. Recupera la coordinata X del click
     clicked_x = clickData['points'][0]['x']
+    clicked_dt = datetime.fromisoformat(clicked_x)
 
-    # 2. Aggiorna i valori "Valore al Cursore" nella tabella
     for row in current_table:
         tag = row['tag']
         val = "---"
-        # Cerchiamo tra le tracce del grafico quella corrispondente al tag
         for trace in fig['data']:
-            if tag in trace['name']:
+            if trace.get('name') and tag in trace['name']:
                 try:
-                    x_vals = list(trace['x'])
-                    if clicked_x in x_vals:
-                        idx = x_vals.index(clicked_x)
+                    x_vals = [datetime.fromisoformat(v) if isinstance(v, str) else v for v in trace['x']]
+                    if clicked_dt in x_vals:
+                        idx = x_vals.index(clicked_dt)
                         y_val = trace['y'][idx]
                         val = f"{y_val:.3f}"
                 except:
@@ -977,26 +976,12 @@ def sync_export_range(cfg, relayout_data, fig):
                 return cfg.get('start_time', ''), cfg.get('end_time', '')
         
         # ZOOM MANUALE
-        if 'xaxis.range[0]' in relayout_data and fig and fig['data']:
+        if 'xaxis.range[0]' in relayout_data:
             try:
-                idx_start = float(relayout_data['xaxis.range[0]'])
-                idx_end = float(relayout_data['xaxis.range[1]'])
-                
-                # MODIFICA QUI: Cerchiamo in customdata, se vuoto cerchiamo in text
-                times = fig['data'][0].get('customdata', [])
-                if not times:
-                    times = fig['data'][0].get('text', [])
-                
-                x_axis = fig['data'][0].get('x', [])
-                
-                if not times or not x_axis: 
-                    return no_update, no_update
-                
-                # Cerchiamo l'orario corrispondente agli indici zoomati
-                # Usiamo indici interi per sicurezza
-                t_s = next((times[i] for i, v in enumerate(x_axis) if v >= idx_start), times[0])
-                t_e = next((times[i] for i, v in reversed(list(enumerate(x_axis))) if v <= idx_end), times[-1])
-                
+                x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'])
+                x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'])
+                t_s = f"{x_start.hour:02d}:{x_start.minute:02d}:{x_start.second:02d}"
+                t_e = f"{x_end.hour:02d}:{x_end.minute:02d}:{x_end.second:02d}"
                 return t_s, t_e
             except Exception as e:
                 print(f"Errore sync zoom: {e}")
@@ -1032,16 +1017,17 @@ def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
     # Prepariamo le colonne del CSV
     headers = ["Time"] + [get_tagname_from_sid(sid, cfg) for sid in selected_sids]
     rows = []
-
+    today = date.today()
     with open(cfg['path'], 'rb') as f:
-        for b_idx in range(cfg['total_blocks']):
-            f.seek(cfg['data_offset'] + (b_idx * cfg['block_size']))
+        for b_idx in block_indices:  # ← must be this, NOT range(cfg['total_blocks'])
+            f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
             record = f.read(cfg['block_size'])
-            if len(record) < cfg['block_size']: break
-            
-            # Orario del blocco corrente (Byte 4, 5, 6)
+            if len(record) < cfg['block_size']:
+                break
             h, m, s = record[4], record[5], record[6]
-            curr_sec = h * 3600 + m * 60 + s
+            curr_dt = datetime(today.year, today.month, today.day, h, m, s)
+            time_axis.append(curr_dt)
+            time_labels.append(f"{h:02d}:{m:02d}:{s:02d}")
             
             # Filtro temporale
             if curr_sec < s_sec: continue
