@@ -1,11 +1,11 @@
 import os, re, struct
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 
 import dash
-from dash import html, dcc, dash_table, callback, Input, Output, State, no_update
+from dash import html, dcc, callback, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import dash_ag_grid as dag
@@ -303,45 +303,72 @@ layout = dbc.Container([
             ),
             dag.AgGrid(
                 id='wbin-info-table',
-
+                dangerously_allow_code=True,
+                columnSize="responsiveSizeToFit",
                 columnDefs=[
+                    {
+                    "headerName": "",
+                    "field": "color",
+                    "width": 60,
+                    "suppressSizeToFit": True,  # keeps it exactly 60px
+                    },
+                    {
+                        "headerName": "Tag",
+                        "field": "tag",
+                        "resizable": True,
+                        "flex": 1,
+                        "cellStyle": {
+                            "styleConditions": [
+                                {
+                                    "condition": "params.data._selected === true",
+                                    "style": {"fontWeight": "bold"}
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "headerName": "Descrizione",
+                        "field": "desc",
+                        "resizable": True,
+                        "flex": 1,  # fills remaining space
+                        "cellStyle": {
+                            "styleConditions": [
+                                {
+                                    "condition": "params.data._selected === true",
+                                    "style": {"fontWeight": "bold"}
+                                }
+                            ]
+                        }
+                    },
+                    {
+                        "headerName": "Valore",
+                        "field": "cur_val",
+                        "width": 100,
+                        "suppressSizeToFit": True, 
+                        "resizable": False,
+                        "cellStyle": {
+                            "textAlign": "right",
+                            "styleConditions": [
+                                {
+                                    "condition": "params.data._selected === true",
+                                    "style": {"fontWeight": "bold"}
+                                }
+                            ]
+                        }
+                    },
                     {
                         "headerName": "Rimuovi",
                         "field": "delete-row",
                         "width": 90,
+                        "suppressSizeToFit": True,
+                        "resizable": False,
                         "cellStyle": {
                             "cursor": "pointer",
                             "textAlign": "center",
                             "color": "red",
                             "fontWeight": "bold"
                         }
-                    },
-                    {
-                        "headerName": "Tag",
-                        "field": "tag",
-                        "resizable": True
-                    },
-                    {
-                        "headerName": "Descrizione",
-                        "field": "desc",
-                        "resizable": True
-                    },
-                    {
-                        "headerName": "Colore",
-                        "field": "color",
-                        "cellStyle": {
-                            "function": "params => { console.log(params.value); return { backgroundColor: params.value }; }"
-                        }
-                    },
-                    {
-                        "headerName": "Valore al cursore",
-                        "field": "cur_val",
-                        "resizable": True,
-                        "cellStyle": {
-                            "color": "black",
-                            "fontWeight": "normal"
-                        }
-                    },
+                    }
                 ],
 
                 defaultColDef={
@@ -1045,6 +1072,37 @@ def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
     return dcc.send_data_frame(df.to_csv, "export_data.csv", index=False), f"Esportati {len(rows)} record."
 
 # --- TABELLE E GRAFICA
+@callback(
+    Output('wbin-info-table', 'columnDefs'),
+    Input('wbin-info-table', 'rowData'),
+    State('wbin-info-table', 'columnDefs'),
+)
+def update_color_column_style(row_data, col_defs):
+    if not row_data:
+        return col_defs
+    
+    # Get unique colors currently in the data
+    colors = list({row['color'] for row in row_data if row.get('color')})
+    
+    # Build styleConditions for each color
+    style_conditions = [
+        {
+            "condition": f"params.value === '{c}'",
+            "style": {"backgroundColor": c, "color": c}
+        }
+        for c in colors
+    ]
+    
+    # Update just the color column
+    for col in col_defs:
+        if col.get('field') == 'color':
+            col['cellStyle'] = {
+                "styleConditions": style_conditions,
+                "defaultStyle": {"backgroundColor": "white", "color": "white"}
+            }
+    
+    return col_defs
+
 
 @callback(
     [
@@ -1120,17 +1178,23 @@ def handle_table_logic(clicked, current_rows, fig, current_tags, cfg):
     # CASE C: OTHER CELLS (HIGHLIGHT)
     # ─────────────────────────────
     else:
-
+        # update figure traces
         if fig and 'data' in fig:
             for trace in fig['data']:
                 if selected_tag in trace.get('name', ''):
                     trace['line']['width'] = 4
                 else:
                     trace['line']['width'] = 1.5
-
-        fig['layout']['uirevision'] = 'constant'
-
-        return no_update, fig, no_update, selected_tag, False, None, None
+            fig['layout']['uirevision'] = 'constant'
+        
+        # mark selected row in rowData
+        new_rows = []
+        for r in current_rows:
+            r = dict(r)
+            r['_selected'] = (r['tag'] == selected_tag)
+            new_rows.append(r)
+        
+        return new_rows, fig, no_update, selected_tag, False, None, None
      
 # CALLBACK PER SALVARE IL NUOVO COLORE SELEZIONATO
 @callback(

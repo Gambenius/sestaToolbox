@@ -103,6 +103,6 @@ div[class*="daq-colorpicker--container"] > div {
     --Dash-Fill-Interactive-Strong: #0000ff;
 }
 .selected-row {
-    font-weight: bold;
+    font-weight: bold !important;
     color: black;
 }   
