@@ -3,3 +3,102 @@
     min-width: 1600px !important;
     width: auto !important;
 }
+/* --- FIX COLOR PICKER HSV --- */
+
+/* Rimuove il cerchio e il bordo individuati dall'ispezione elemento */
+/* Utilizziamo selettori basati sulla struttura individuata per sovrascrivere le classi dinamiche */
+div[class*="jHFaxD"] > div,
+div[class*="daq-colorpicker--container"] > div {
+    box-shadow: none !important;
+    background-color: transparent !important;
+    border-radius: 0 !important;
+    border: none !important;
+}
+
+/* Nasconde lo slider dell'opacità (alpha) e la scacchiera */
+#wbin-color-picker-modal .daq-colorpicker--controls > div:nth-child(2),
+#wbin-color-picker-modal .daq-colorpicker--controls > div:nth-child(3),
+.daq-colorpicker--controls > div:nth-child(2),
+.daq-colorpicker--controls > div:nth-child(3) {
+    display: none !important;
+    visibility: hidden !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* Rimuove l'ombreggiatura e sistema i bordi del contenitore principale */
+#wbin-color-picker-modal .daq-colorpicker--container,
+.daq-colorpicker--container {
+    box-shadow: none !important;
+    border: 1px solid #dee2e6 !important;
+    background-color: white !important;
+    padding: 15px !important;
+    border-radius: 4px !important;
+}
+
+/* Sistema l'area della ruota cromatica */
+#wbin-color-picker-modal .daq-colorpicker--wheel-container,
+.daq-colorpicker--wheel-container {
+    background: none !important;
+    border: none !important;
+}
+
+/* Distanzia gli slider dalla ruota cromatica */
+#wbin-color-picker-modal .daq-colorpicker--controls,
+.daq-colorpicker--controls {
+    margin-top: 15px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+}
+
+/* Assicura che l'input HEX sia visibile e centrato */
+#wbin-color-picker-modal .daq-colorpicker--hex,
+.daq-colorpicker--hex {
+    margin-top: 10px !important;
+    width: 100% !important;
+}
+
+
+/* Force override Zephyr focus color */
+.form-control:focus,
+.form-select:focus {
+    border-color: #0000ff !important;
+    box-shadow: 0 0 0 0.2rem rgba(255,0,0,0.25) !important;
+}
+
+*:focus {
+    outline: none !important;
+    box-shadow: none !important;
+}
+
+:focus {
+    border-color: #0000ff !important;
+}
+
+/* Selected day */
+.CalendarDay__selected,
+.CalendarDay__selected:active,
+.CalendarDay__selected:hover {
+    background: #0000ff !important;
+    border: 1px solid #0000ff !important;
+    color: white !important;
+}
+
+/* Hovered day */
+.CalendarDay__hovered_span,
+.CalendarDay__hovered_span:hover {
+    background: rgba(255,0,0,0.2) !important;
+    border: 1px solid #0000ff !important;
+    color: black !important;
+}
+
+/* Keyboard / focus selection */
+.CalendarDay__selected_span {
+    background: #0000ff !important;
+    border: 1px solid #0000ff !important;
+}
+:root {
+    --Dash-Fill-Interactive-Strong: #0000ff;
+}

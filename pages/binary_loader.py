@@ -7,6 +7,7 @@ import plotly.graph_objects as go
 import dash
 from dash import html, dcc, dash_table, callback, Input, Output, State, no_update
 import dash_bootstrap_components as dbc
+import dash_daq as daq
 
 # Registrazione della pagina
 dash.register_page(__name__, path="/wbin")
@@ -155,6 +156,17 @@ layout = dbc.Container([
     dcc.Store(id='wbin-zoom-store', data={'start': 0, 'end': None}),
     dcc.Store(id='wbin-selected-path'),
     dcc.Download(id="download-csv"),
+    dcc.Store(id='wbin-selected-row-store', data=None),
+    dcc.Store(id='wbin-color-edit-store', data=None),
+    dbc.Modal(id='wbin-color-picker-modal', children=[
+        dbc.ModalHeader(dbc.ModalTitle("Seleziona Colore")),
+        daq.ColorPicker(
+                id='wbin-color-input',
+                # label='Color Picker',
+                value=dict(hex="#0000FF"),
+            ),
+        dbc.ModalFooter(dbc.Button("Conferma", id="wbin-color-confirm", color="primary"))
+    ]),
     dbc.Row([
         # Sidebar
         dbc.Col([
@@ -165,7 +177,7 @@ layout = dbc.Container([
                     "📂 SELEZIONA BINARIO",
                     id="wbin-btn-open-modal",
                     color="primary",
-                    outline=True,
+                    # outline=True,
                     className="w-100 mb-3",
                 ),
 
@@ -345,8 +357,8 @@ layout = dbc.Container([
 # 3. CALLBACKS
 # ─────────────────────────────────────────────────────────────────
 
-NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
-
+# NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
+NETWORK_BASE_PATH = r"/home/edoardo/Documenti/sestaToolbox/data"
 def format_file_size(size_bytes: int) -> str:
     """Converte byte in formato leggibile (KB, MB, GB)."""
     for unit in ['B', 'KB', 'MB', 'GB']:
@@ -1025,96 +1037,156 @@ def export_csv(n_clicks, t_start_raw, t_end_raw, selected_sids, cfg):
 # --- TABELLE E GRAFICA
 
 @callback(
-    Output('wbin-info-table', 'style_data_conditional', allow_duplicate=True),
-    Input('wbin-info-table', 'data'),
-    prevent_initial_call=True
-)
-def update_table_colors(data):
-    if not data:
-        return no_update
-    
-    # Stili base (quelli che abbiamo scritto sopra nel layout)
-    base_styles = [
-        {'if': {'column_id': 'delete-row'}, 'cursor': 'pointer', 'textAlign': 'center', 'color': 'red', 'fontWeight': 'bold'},
-        {'if': {'column_id': 'cur_val'}, 'color': 'black', 'fontWeight': 'normal'},
-        {'if': {'state': 'active'}, 'backgroundColor': 'inherit', 'border': '1px solid #dee2e6'}
-    ]
-    
-    # Aggiungiamo i colori di sfondo per ogni riga basandoci sul valore HEX in row['color']
-    for i, row in enumerate(data):
-        base_styles.append({
-            'if': {
-                'column_id': 'color',
-                'row_index': i
-            },
-            'backgroundColor': row['color'],
-            'color': row['color'] # Rende il testo invisibile (stesso colore dello sfondo)
-        })
-    
-    return base_styles
-
-@callback(
     [Output('wbin-info-table', 'data', allow_duplicate=True),
      Output('wbin-main-graph', 'figure', allow_duplicate=True),
      Output('wbin-tag-dropdown', 'value', allow_duplicate=True),
-     Output('wbin-info-table', 'active_cell')],
-    [Input('wbin-info-table', 'active_cell'),
-     Input('wbin-info-table', 'data')],
+     Output('wbin-info-table', 'active_cell'),
+     Output('wbin-info-table', 'selected_cells'),
+     Output('wbin-selected-row-store', 'data'),
+     Output('wbin-color-picker-modal', 'is_open'),
+     Output('wbin-color-edit-store', 'data'),
+     Output('wbin-color-input', 'value')],
+    [Input('wbin-info-table', 'active_cell')],
     [State('wbin-info-table', 'data'),
      State('wbin-main-graph', 'figure'),
      State('wbin-tag-dropdown', 'value'),
      State('wbin-config-store', 'data')],
     prevent_initial_call=True
 )
-def handle_table_logic(active_cell, table_data_input, current_rows, fig, current_tags, cfg):
+def handle_table_logic(active_cell, current_rows, fig, current_tags, cfg):
     ctx = dash.callback_context
-    if not ctx.triggered:
-        return no_update, no_update, no_update, no_update
+    if not ctx.triggered or not active_cell:
+        return no_update, no_update, no_update, no_update, no_update, no_update, False, no_update, no_update
     
-    trigger_id = ctx.triggered[0]['prop_id']
+    row_idx = active_cell['row']
+    col_id = active_cell['column_id']
+    
+    if row_idx >= len(current_rows):
+        return no_update, no_update, no_update, None, [], no_update, False, no_update, no_update
 
-    # --- 1. GESTIONE CLICK SU CELLA (ELIMINA O BOLD) ---
-    if "active_cell" in trigger_id and active_cell:
-        row_idx = active_cell['row']
-        col_id = active_cell['column_id']
-        selected_tag = current_rows[row_idx]['tag']
+    selected_tag = current_rows[row_idx]['tag']
 
-        # CASO A: CLICK SU CESTINO (ELIMINA)
-        if col_id == 'delete-row':
-            new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
-            fig['data'] = [t for t in fig['data'] if selected_tag not in t['name']]
-            
-            # Sincronizza Dropdown
-            new_tags = []
-            if current_tags:
-                for sid in current_tags:
-                    if get_tagname_from_sid(sid, cfg) != selected_tag:
-                        new_tags.append(sid)
-            
-            return new_table, fig, new_tags, None
+    # CASO A: CLICK SU CESTINO (ELIMINA)
+    if col_id == 'delete-row':
+        new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
+        
+        if fig and 'data' in fig:
+            fig['data'] = [t for t in fig['data'] if selected_tag not in t.get('name', '')]
+        
+        new_tags = []
+        if current_tags:
+            for sid in current_tags:
+                if get_tagname_from_sid(sid, cfg) != selected_tag:
+                    new_tags.append(sid)
+        
+        return new_table, fig, new_tags, None, [], None, False, no_update, no_update
 
-        # CASO B: CLICK SU ALTRA CELLA (HIGHLIGHT BOLD)
-        else:
+    # CASO B: CLICK SULLA COLONNA COLORE (APRI MODAL E SINCRONIZZA COLORE)
+    elif col_id == 'color':
+        current_color = current_rows[row_idx].get('color', '#0000FF')
+        return no_update, no_update, no_update, None, [], selected_tag, True, row_idx, dict(hex=current_color)
+
+    # CASO C: CLICK SU ALTRA CELLA (EVIDENZIAZIONE)
+    else:
+        if fig and 'data' in fig:
             for trace in fig['data']:
-                if selected_tag in trace['name']:
-                    trace['line']['width'] = 4   # Bold
+                if selected_tag in trace.get('name', ''):
+                    trace['line']['width'] = 4
                 else:
-                    trace['line']['width'] = 1.5 # Normal
+                    trace['line']['width'] = 1.5
+        
+        fig['layout']['uirevision'] = 'constant'
+        
+        return no_update, fig, no_update, None, [], selected_tag, False, no_update, no_update
+    
+# CALLBACK PER SALVARE IL NUOVO COLORE SELEZIONATO
+@callback(
+    [Output('wbin-info-table', 'data', allow_duplicate=True),
+     Output('wbin-color-picker-modal', 'is_open', allow_duplicate=True)],
+    Input('wbin-color-confirm', 'n_clicks'),
+    [State('wbin-color-input', 'value'),
+     State('wbin-color-edit-store', 'data'),
+     State('wbin-info-table', 'data')],
+    prevent_initial_call=True
+)
+def update_row_color(n_clicks, color_value, row_idx, current_rows):
+    if n_clicks is None or row_idx is None:
+        return no_update, False
+    
+    # ESTRAZIONE CORRETTA: color_value è un dizionario {'hex': '#...', 'rgb': {...}, 'hsv': {...}}
+    # Dobbiamo passare alla DataTable solo la stringa HEX
+    new_hex = "#0000FF" # Default di sicurezza
+    if isinstance(color_value, dict) and 'hex' in color_value:
+        new_hex = color_value['hex']
+    elif isinstance(color_value, str):
+        new_hex = color_value
+    
+    if row_idx < len(current_rows):
+        # Cloniamo i dati per sicurezza prima di modificare
+        new_rows = [row.copy() for row in current_rows]
+        new_rows[row_idx]['color'] = new_hex
+        return new_rows, False
+    
+    return no_update, False
+
+
+# CALLBACK PER AGGIORNARE IL COLORE DALLA TABELLA AL GRAFICO
+@callback(
+    Output('wbin-main-graph', 'figure', allow_duplicate=True),
+    Input('wbin-info-table', 'data'),
+    State('wbin-main-graph', 'figure'),
+    prevent_initial_call=True
+)
+def sync_table_color_to_graph(table_data, fig):
+    if not table_data or not fig:
+        return no_update
+    
+    color_map = {row['tag']: row['color'] for row in table_data}
+    
+    for trace in fig['data']:
+        tag_name = trace.get('name', '')
+        if tag_name in color_map:
+            trace['line']['color'] = color_map[tag_name]
             
-            fig['layout']['uirevision'] = 'constant'
-            return no_update, fig, no_update, no_update
+    fig['layout']['uirevision'] = 'constant'
+    return fig
 
-    # --- 2. GESTIONE CAMBIO DATI (ES. COLORE SE AVESSI MANTENUTO IL DROPDOWN) ---
-    if "wbin-info-table.data" in trigger_id:
-        # Qui potresti gestire modifiche manuali ai dati se necessario
-        return no_update, no_update, no_update, no_update
-
-    return no_update, no_update, no_update, no_update
-
-
-
-
-
-
-
-
+# CALLBACK PER LO STILE (Sincronizza grassetto e visualizzazione colore cella)
+@callback(
+    Output('wbin-info-table', 'style_data_conditional'),
+    [Input('wbin-selected-row-store', 'data'),
+     Input('wbin-info-table', 'data')],
+    prevent_initial_call=False
+)
+def update_table_style(selected_tag, table_data):
+    base_styles = [
+        {'if': {'column_id': 'delete-row'}, 'cursor': 'pointer', 'textAlign': 'center', 'color': 'red', 'fontWeight': 'bold'},
+        {'if': {'column_id': 'cur_val'}, 'color': 'black', 'fontWeight': 'normal'},
+        {'if': {'state': 'active'}, 'backgroundColor': 'inherit', 'border': '1px solid #dee2e6'}
+    ]
+    
+    color_styles = []
+    if table_data:
+        for row in table_data:
+            color_styles.append({
+                'if': {
+                    'filter_query': f'{{tag}} eq "{row["tag"]}"',
+                    'column_id': 'color'
+                },
+                'backgroundColor': row['color'],
+                'color': row['color'], 
+                'cursor': 'pointer'
+            })
+    
+    bold_style = []
+    if selected_tag:
+        bold_style = [{
+            'if': {
+                'filter_query': f'{{tag}} eq "{selected_tag}"',
+                'column_id': ['tag', 'desc']
+            },
+            'fontWeight': 'bold',
+            'color': 'black'
+        }]
+    
+    return base_styles + color_styles + bold_style
