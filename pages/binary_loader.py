@@ -360,9 +360,12 @@ layout = dbc.Container([
                 type="default"
             ),
             dbc.Row([
-                dbc.Col(dbc.Button("⚙️ CONFIGURA ASSI", id="wbin-btn-axis-modal", color="secondary", outline=True, size="sm"), width=3),
-                dbc.Col(html.Small("Usa la colonna 'Asse' per raggruppare i canali", className="text-muted"), width=9, className="text-end")
-            ], className="my-2"),
+                dbc.Col(dbc.Button("⚙️ CONFIGURA ASSI", id="wbin-btn-axis-modal", color="secondary", outline=True, size="sm"), width="auto"),
+                dbc.Col(html.Small("Usa la colonna 'Asse' per raggruppare i canali", className="text-muted"), className="text-end me-auto"),
+                dbc.Col(dbc.Button("🔍 Autoscale Y", id="wbin-btn-autoscale", color="secondary", outline=True, size="sm"), width="auto"),
+                dbc.Col(dbc.Button("📄 Salva come PDF", id="wbin-btn-export-pdf", color="secondary", outline=True, size="sm"), width="auto"),
+                dcc.Download(id='wbin-download-pdf'),
+            ], className="my-2 align-items-center"),
             dag.AgGrid(
                 id='wbin-info-table',
                 dangerously_allow_code=True,
@@ -1213,10 +1216,16 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
 
         # Y range priority: y_store (drag/modal) > preset > autoscale
         stored = y_store.get(ak) if y_store else None
+
         if isinstance(stored, list) and len(stored) == 2 and None not in stored:
             y_range   = stored
             autorange = False
+        elif stored == "auto":
+            # Explicitly autoscaled — skip preset entirely
+            y_range   = None
+            autorange = True
         else:
+            # No entry yet — fall back to preset
             try:
                 y_range   = [float(conf['rangeMIN']), float(conf['rangeMAX'])]
                 autorange = False
@@ -1231,9 +1240,11 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
             "showticklabels": True,
             "matches":        "x",
             "autorange":      autorange,
+            "nticks":         5,    # ~4 gridlines (nticks includes the endpoints)
         }
         if y_range:
             ax_def["range"] = y_range
+
 
         layout[ak] = ax_def
 
@@ -1695,4 +1706,38 @@ def cb_cell_clicked(clicked, current_rows, fig, current_tags, cfg):
             new_rows.append(r)
         return new_rows, fig, nu, selected_tag, False, None, None, nu
   
-  
+  # SAVE AND EXPORT PDF
+
+@callback(
+    Output('wbin-download-pdf', 'data'),
+    Input('wbin-btn-export-pdf', 'n_clicks'),
+    [State('wbin-main-graph', 'figure'),
+     State('wbin-config-store', 'data'),
+     State('wbin-date-picker', 'date')],
+    prevent_initial_call=True
+)
+def cb_export_pdf(n_clicks, figure, cfg, date_str):
+    if not n_clicks or not figure:
+        return no_update
+    date_part = date_str.replace('-', '_') if date_str else 'nodata'
+    filename  = f"{date_part}_binrev.pdf"
+    fig = go.Figure(figure)
+    pdf = fig.to_image(format='pdf', width=1920, height=1080, scale=1)
+    return dcc.send_bytes(pdf, filename=filename)
+
+# autoscale y button
+@callback(
+    [Output('wbin-y-ranges-store', 'data',   allow_duplicate=True),
+     Output('wbin-redraw-store',   'data',   allow_duplicate=True)],
+    Input('wbin-btn-autoscale', 'n_clicks'),
+    State('wbin-info-table', 'rowData'),
+    prevent_initial_call=True
+)
+def cb_autoscale_y(n_clicks, info_rows):
+    if not n_clicks:
+        return no_update, no_update
+    y_store = {}
+    for row in (info_rows or []):
+        ak = _ax_key(int(row['axis_id']))
+        y_store[ak] = "auto"   # ← sentinel, not None, not a list
+    return y_store, {"ts": datetime.now().isoformat(), "reason": "autoscale"}
