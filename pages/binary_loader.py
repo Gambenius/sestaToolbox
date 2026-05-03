@@ -17,13 +17,13 @@ dash.register_page(__name__, path="/wbin")
 
 AXIS_PRESETS = {
     "Custom":  {"name": "",                  "rangeMIN": "",    "rangeMAX": ""},
-    "bar H":   {"name": "pressione [bar]",   "rangeMIN": "0",   "rangeMAX": "200"},
-    "bar L":   {"name": "pressione [bar]",   "rangeMIN": "0",   "rangeMAX": "10"},
-    "mbar":    {"name": "pressione [mbar]",  "rangeMIN": "0",   "rangeMAX": "1000"},
-    "kgs H":   {"name": "portata [kg/s]",    "rangeMIN": "0",   "rangeMAX": "30"},
-    "kgs L":   {"name": "portata [kg/s]",    "rangeMIN": "0",   "rangeMAX": "1"},
-    "gs H":    {"name": "portata [g/s]",     "rangeMIN": "0",   "rangeMAX": "1000"},
-    "CH":      {"name": "temperatura [°C]",  "rangeMIN": "0",   "rangeMAX": "2000"},
+    "bar H":   {"name": "Pressione [bar]",   "rangeMIN": "0",   "rangeMAX": "200"},
+    "bar L":   {"name": "Pressione [bar]",   "rangeMIN": "0",   "rangeMAX": "10"},
+    "mbar":    {"name": "Pressione [mbar]",  "rangeMIN": "0",   "rangeMAX": "1000"},
+    "kgs H":   {"name": "Portata [kg/s]",    "rangeMIN": "0",   "rangeMAX": "30"},
+    "kgs L":   {"name": "Portata [kg/s]",    "rangeMIN": "0",   "rangeMAX": "1"},
+    "gs H":    {"name": "Portata [g/s]",     "rangeMIN": "0",   "rangeMAX": "1000"},
+    "CH":      {"name": "Temperatura [°C]",  "rangeMIN": "0",   "rangeMAX": "2000"},
     "CL":      {"name": "temperatura [°C]",  "rangeMIN": "0",   "rangeMAX": "100"},
     "Amp":     {"name": "corrente [A]",      "rangeMIN": "0",   "rangeMAX": "200"},
     "Volt":    {"name": "Tensione [V]",      "rangeMIN": "0",   "rangeMAX": "400"},
@@ -335,7 +335,7 @@ layout = dbc.Container([
                     html.Div(id="csv-status-msg", className="small")
                 ], style={'padding': '0px', 'borderTop': '1px solid #ddd'})
             ], style={'padding': '20px', 'borderRight': '1px solid #ddd', 'minHeight': '90vh'})
-        ], width=3),
+        ],id="wbin-sidebar-col", width=3),
         
         # Grafico
         dbc.Col([
@@ -471,7 +471,7 @@ layout = dbc.Container([
                     }
                 }
             )
-        ], width=9)
+        ], id="wbin-main-col", width=9, style={"position": "relative"})
     ], className="mt-3")
 ], fluid=True, style={'backgroundColor': '#f8f9fa', 'minHeight': '100vh'})
 
@@ -1829,8 +1829,19 @@ def cb_apply_fontsize(font_size, figure, info_rows):
 
     return patched
 
-
-
-
+# @callback(
+#     [Output('wbin-sidebar-col',    'width'),
+#      Output('wbin-sidebar-col',    'style'),
+#      Output('wbin-main-col',       'width'),
+#      Output('wbin-sidebar-toggle', 'children')],
+#     Input('wbin-sidebar-toggle', 'n_clicks'),
+#     prevent_initial_call=True
+# )
+# def cb_toggle_sidebar(n_clicks):
+#     if n_clicks and n_clicks % 2 == 1:
+#         # Collapsed
+#         return 0, {"display": "none"}, 12, "▶"
+#     # Expanded
+#     return 3, {"display": "block"}, 9, "◀"
 
 
