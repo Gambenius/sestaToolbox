@@ -378,7 +378,9 @@ layout = dbc.Container([
                     {
                         "headerName": "Tag",
                         "field": "tag",
+                        "singleClickEdit": True, 
                         "resizable": True,
+                        "editable": True,
                         "flex": 1,
                         "cellStyle": {
                             "styleConditions": [
@@ -421,6 +423,7 @@ layout = dbc.Container([
                     {
                         "headerName": "Asse",
                         "field": "axis_sel",
+                        "singleClickEdit": True, 
                         "editable": True,
                         "cellEditor": "agSelectCellEditor",
                         "cellEditorParams": {"values": AXIS_DROPDOWN_OPTIONS},
@@ -529,7 +532,7 @@ def cb_list_files(date_str, is_open, date_str_state):
             return no_update, no_update, no_update  # ← add third
 
     if not date_str:
-        return [], None, ""  # already 3, fine
+        return [], None, ""  
 
     dt          = datetime.strptime(date_str, '%Y-%m-%d')
     folder_name = dt.strftime('%Y%m%d')
@@ -1307,76 +1310,87 @@ def cb_track_y_ranges(relayout_data, current_store):
 #   - pre-populate y_store with preset range so the graph applies it immediately
 #   - ping wbin-redraw-store to trigger graph redraw
 
+
 @callback(
-    [Output('wbin-info-table',       'rowData',          allow_duplicate=True),
-     Output('wbin-axis-config-grid', 'rowData',          allow_duplicate=True),
-     Output('wbin-y-ranges-store',   'data',             allow_duplicate=True),
-     Output('wbin-redraw-store',     'data')],
+    [Output('wbin-info-table',       'rowData',  allow_duplicate=True),
+     Output('wbin-axis-config-grid', 'rowData',  allow_duplicate=True),
+     Output('wbin-y-ranges-store',   'data',     allow_duplicate=True),
+     Output('wbin-redraw-store',     'data',     allow_duplicate=True)],
     Input('wbin-info-table', 'cellValueChanged'),
     [State('wbin-info-table',       'rowData'),
      State('wbin-axis-config-grid', 'rowData'),
      State('wbin-y-ranges-store',   'data')],
     prevent_initial_call=True
 )
-def cb_axis_assigned(cell_changed, info_rows, axis_rows, y_store):
+def cb_cell_value_changed(cell_changed, info_rows, axis_rows, y_store):
     if not cell_changed or not info_rows:
         return no_update, no_update, no_update, no_update
 
     changed = cell_changed[0]
-    if changed.get('colId') != 'axis_sel':
-        return no_update, no_update, no_update, no_update
+    col_id  = changed.get('colId')
 
-    selected  = changed['value']
-    row_sid   = changed['data']['sid']
-    axis_rows = [dict(r) for r in (axis_rows or [])]
-    info_rows = [dict(r) for r in info_rows]
-    y_store   = dict(y_store or {})
+    # --- Tag edited ---
+    if col_id == 'tag':
+        new_tag = changed['value']
+        row_sid = changed['data']['sid']
+        new_rows = []
+        for row in info_rows:
+            row = dict(row)
+            if row['sid'] == row_sid:
+                row['tag'] = new_tag
+            new_rows.append(row)
+        ping = {"ts": datetime.now().isoformat(), "reason": "tag_edit"}
+        return new_rows, no_update, no_update, ping
 
-    if selected.isdigit():
-        # Custom axis 1-5 → IDs 101-105
-        target_id    = int(selected) + 100
-        existing_ids = [int(a['id']) for a in axis_rows]
-        if target_id not in existing_ids:
-            axis_rows.append({
-                "id": target_id, "preset": "Custom",
-                "name": f"Cust. {selected}", "rangeMIN": "", "rangeMAX": "",
-            })
-        # Custom axes use autoscale — clear any stored range
-        ak = _ax_key(target_id)
-        y_store[ak] = None
+    # --- Axis assigned ---
+    if col_id == 'axis_sel':
+        selected  = changed['value']
+        row_sid   = changed['data']['sid']
+        axis_rows = [dict(r) for r in (axis_rows or [])]
+        info_rows = [dict(r) for r in info_rows]
+        y_store   = dict(y_store or {})
 
-    else:
-        # Named preset
-        preset        = AXIS_PRESETS.get(selected, {})
-        existing_axis = next((a for a in axis_rows if a.get('preset') == selected), None)
-
-        if existing_axis:
-            target_id = int(existing_axis['id'])
-        else:
-            preset_ids = [int(a['id']) for a in axis_rows if int(a['id']) < 100]
-            target_id  = max(preset_ids) + 1 if preset_ids else 1
-            axis_rows.append({
-                "id": target_id, "preset": selected,
-                "name":     preset.get('name', ''),
-                "rangeMIN": preset.get('rangeMIN', ''),
-                "rangeMAX": preset.get('rangeMAX', ''),
-            })
-
-        # Pre-populate y store with preset range
-        ak = _ax_key(target_id)
-        try:
-            y_store[ak] = [float(preset['rangeMIN']), float(preset['rangeMAX'])]
-        except (ValueError, TypeError, KeyError):
+        if selected.isdigit():
+            target_id    = int(selected) + 100
+            existing_ids = [int(a['id']) for a in axis_rows]
+            if target_id not in existing_ids:
+                axis_rows.append({
+                    "id": target_id, "preset": "Custom",
+                    "name": f"Cust. {selected}", "rangeMIN": "", "rangeMAX": "",
+                })
+            ak = _ax_key(target_id)
             y_store[ak] = None
+        else:
+            preset        = AXIS_PRESETS.get(selected, {})
+            existing_axis = next((a for a in axis_rows if a.get('preset') == selected), None)
+            if existing_axis:
+                target_id = int(existing_axis['id'])
+            else:
+                preset_ids = [int(a['id']) for a in axis_rows if int(a['id']) < 100]
+                target_id  = max(preset_ids) + 1 if preset_ids else 1
+                axis_rows.append({
+                    "id": target_id, "preset": selected,
+                    "name":     preset.get('name', ''),
+                    "rangeMIN": preset.get('rangeMIN', ''),
+                    "rangeMAX": preset.get('rangeMAX', ''),
+                })
+            ak = _ax_key(target_id)
+            try:
+                y_store[ak] = [float(preset['rangeMIN']), float(preset['rangeMAX'])]
+            except (ValueError, TypeError, KeyError):
+                y_store[ak] = None
 
-    for row in info_rows:
-        if row['sid'] == row_sid:
-            row['axis_id']  = target_id
-            row['axis_sel'] = selected
-            break
+        for row in info_rows:
+            if row['sid'] == row_sid:
+                row['axis_id']  = target_id
+                row['axis_sel'] = selected
+                break
 
-    axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
-    return info_rows, axis_rows, y_store, {"ts": datetime.now().isoformat()}
+        axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
+        ping = {"ts": datetime.now().isoformat(), "reason": "axis_sel"}
+        return info_rows, axis_rows, y_store, ping
+
+    return no_update, no_update, no_update, no_update
 
 
 # ─── 4. MAIN RENDER ───────────────────────────────────────────────────────────
@@ -1646,7 +1660,7 @@ def cb_cell_clicked(clicked, current_rows, fig, current_tags, cfg):
     row_idx = clicked.get("rowIndex")
     col_id  = clicked.get("colId")
 
-    if col_id in ('axis_sel',):
+    if col_id in ('axis_sel', 'tag'):
         return nu, nu, nu, nu, False, nu, nu, nu
 
     if row_idx is None or row_idx >= len(current_rows):
@@ -1680,3 +1694,5 @@ def cb_cell_clicked(clicked, current_rows, fig, current_tags, cfg):
             r['_selected'] = (r['tag'] == selected_tag)
             new_rows.append(r)
         return new_rows, fig, nu, selected_tag, False, None, None, nu
+  
+  
