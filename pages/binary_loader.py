@@ -14,7 +14,9 @@ import dash_ag_grid as dag
 # Registrazione della pagina
 dash.register_page(__name__, path="/wbin")
 
+
 AXIS_PRESETS = {
+    "Custom":  {"name": "",                  "rangeMIN": "",    "rangeMAX": ""},
     "bar H":   {"name": "pressione [bar]",   "rangeMIN": "0",   "rangeMAX": "200"},
     "bar L":   {"name": "pressione [bar]",   "rangeMIN": "0",   "rangeMAX": "10"},
     "mbar":    {"name": "pressione [mbar]",  "rangeMIN": "0",   "rangeMAX": "1000"},
@@ -26,9 +28,9 @@ AXIS_PRESETS = {
     "Amp":     {"name": "corrente [A]",      "rangeMIN": "0",   "rangeMAX": "200"},
     "Volt":    {"name": "Tensione [V]",      "rangeMIN": "0",   "rangeMAX": "400"},
 }
-
-PRESET_OPTIONS = [{"label": k, "value": k} for k in AXIS_PRESETS]
 AXIS_DROPDOWN_OPTIONS = list(AXIS_PRESETS.keys()) + ["1", "2", "3", "4", "5"]
+
+
 n_pts = 1000 #shown in plots
 
 # NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
@@ -185,8 +187,9 @@ layout = dbc.Container([
     dcc.Store(id='wbin-axis-config', data={'1': {'min': None, 'max': None}}),
     dcc.Store(id='wbin-axis-definitions-store', data={'1': {'name': 'Primary', 'range': 'Auto', 'style': 'solid'}}),
     dcc.Store(id='wbin-info-table-store'),
-
-
+    dcc.Store(id='wbin-x-range-store'),
+    dcc.Store(id='wbin-y-ranges-store'),
+    dcc.Store(id='wbin-redraw-store'),
     dbc.Modal([
         dbc.ModalHeader(dbc.ModalTitle("Configurazione Assi")),
         dbc.ModalBody([
@@ -508,24 +511,37 @@ def cb_toggle_modal(open_n, close_n, load_n, is_open):
     # Chiude sempre il modal (chiusura o caricamento)
     return False
 
-# --- CALLBACK: DATA → LISTA FILE .BIN ---
 @callback(
-    [Output('wbin-file-dropdown', 'options'),
-     Output('wbin-file-info-modal', 'children')],
-    Input('wbin-date-picker', 'date'),
+    [Output('wbin-file-dropdown',  'options'),
+     Output('wbin-file-dropdown',  'value'),  
+     Output('wbin-file-info-modal','children')],
+    [Input('wbin-date-picker', 'date'),
+     Input('wbin-file-modal', 'is_open')],
+    State('wbin-date-picker', 'date'),
     prevent_initial_call=True
 )
-def cb_list_files(date_str):
+def cb_list_files(date_str, is_open, date_str_state):
+    trigger = dash.callback_context.triggered[0]['prop_id'].split('.')[0]
+
+    # Use state date when triggered by modal open
+    if trigger == 'wbin-file-modal':
+        if not is_open:
+            return no_update, no_update, no_update  # ← add third
+
     if not date_str:
-        return [], ""
-    # date_str è ISO "YYYY-MM-DD"
-    dt = datetime.strptime(date_str, '%Y-%m-%d')
+        return [], None, ""  # already 3, fine
+
+    dt          = datetime.strptime(date_str, '%Y-%m-%d')
     folder_name = dt.strftime('%Y%m%d')
     folder_path = os.path.join(NETWORK_BASE_PATH, folder_name)
-    files = list_bin_files(folder_path)
+    files       = list_bin_files(folder_path)
+
     if not files:
-        return [], html.Div("Nessun file .bin trovato nella cartella.", className="text-danger small")
-    return files, html.Div(f"{len(files)} file .bin trovati in {folder_name}", className="text-success small")
+        return [], None, html.Div("Nessun file .bin trovato nella cartella.", className="text-danger small")
+
+    auto_select = files[0]['value'] if len(files) == 1 else None
+
+    return files, auto_select, html.Div(f"{len(files)} file .bin trovati in {folder_name}", className="text-success small")
 
 # --- CALLBACK: FILE SELEZIONATO → ABILITA PULSANTE CARICA ---
 @callback(
@@ -661,391 +677,6 @@ def cb_filter_tags(search, selected_values, cfg):
 # ─────────────────────────────────────────────────────────────────
 # CALLBACK PRINCIPALE: RENDER GRAFICO + INIZIALIZZAZIONE TABELLA
 # ─────────────────────────────────────────────────────────────────
-
-
-@callback(
-    Output('wbin-axis-config-grid', 'rowData', allow_duplicate=True),
-    Input('wbin-axis-config-grid', 'cellValueChanged'),
-    State('wbin-axis-config-grid', 'rowData'),
-    prevent_initial_call=True
-)
-def cb_apply_axis_preset(cell_changed, axis_rows):
-    if not cell_changed or not axis_rows:
-        return dash.no_update
-
-    # cellValueChanged is a list with one entry
-    changed = cell_changed[0]
-    if changed.get('colId') != 'preset':
-        return dash.no_update
-
-    preset_key = changed['value']
-    row_id = str(changed['data']['id'])
-    preset = AXIS_PRESETS.get(preset_key)
-    if not preset:
-        return dash.no_update
-
-    new_rows = []
-    for row in axis_rows:
-        if str(row['id']) == row_id:
-            row = dict(row)  # don't mutate in place
-            row['preset'] = preset_key
-            if preset_key != 'Custom':
-                # Only overwrite name/range if not custom
-                row['name'] = preset['name']
-                row['rangeMIN'] = preset['rangeMIN']
-                row['rangeMAX'] = preset['rangeMAX']
-        new_rows.append(row)
-
-    return new_rows
-
-@callback(
-    Output('wbin-main-graph', 'figure', allow_duplicate=True),
-    Input('wbin-close-axis-modal', 'n_clicks'),
-    [State('wbin-main-graph', 'figure'),
-     State('wbin-axis-config-grid', 'rowData'),
-     State('wbin-info-table', 'rowData')],
-    prevent_initial_call=True
-)
-def cb_apply_axis_config(n_clicks, current_fig, axis_rows, info_rows):
-    if not n_clicks or not current_fig or not axis_rows:
-        return dash.no_update
-
-    ax_map = {str(a['id']): a for a in axis_rows}
-    layout_patch = {}
-
-    # Collect which axis IDs are actually used
-    used_ids = sorted(set(int(r['axis_id']) for r in (info_rows or [])))
-
-    for aid_int in used_ids:
-        aid = str(aid_int)
-        ax_key = "yaxis" if aid == '1' else f"yaxis{aid}"
-        conf = ax_map.get(aid, {})
-
-        axis_update = {
-            "title": {"text": conf.get('name', f'Asse {aid}'), "font": {"size": 12}}
-        }
-
-        # Apply range only if both min and max are valid numbers
-        range_min = conf.get('rangeMIN', '')
-        range_max = conf.get('rangeMAX', '')
-        try:
-            axis_update["range"] = [float(range_min), float(range_max)]
-            axis_update["autorange"] = False
-        except (ValueError, TypeError):
-            axis_update["autorange"] = True  # fallback to auto if blank/invalid
-
-        layout_patch[ax_key] = axis_update
-
-    # Patch figure layout in-place — no data re-read
-    patched = go.Figure(current_fig)
-    patched.update_layout(layout_patch)
-    return patched
-
-@callback(
-    Output('wbin-axis-config-grid', 'rowData'),
-    Input('wbin-info-table', 'rowData'),
-    State('wbin-axis-config-grid', 'rowData'),
-    prevent_initial_call=True
-)
-def cb_sync_axis_rows(info_rows, axis_rows):
-    if not info_rows:
-        return dash.no_update
-
-    axis_rows = [dict(r) for r in (axis_rows or [])]
-    used_ids = set(int(r['axis_id']) for r in info_rows)
-    existing_ids = set(int(a['id']) for a in axis_rows)
-
-    changed = False
-    for aid in used_ids:
-        if aid not in existing_ids:
-            axis_rows.append({
-                "id": aid,
-                "preset": "Custom",
-                "name": f"Asse {aid}",
-                "rangeMIN": "",
-                "rangeMAX": "",
-            })
-            changed = True
-
-    if not changed:
-        return dash.no_update
-
-    return sorted(axis_rows, key=lambda x: int(x['id']))
-
-
-@callback(
-    [Output('wbin-main-graph', 'figure'),
-     Output('wbin-info-table', 'rowData')],
-    [Input('wbin-btn-plot', 'n_clicks'),
-     Input('wbin-main-graph', 'relayoutData'),
-     Input('wbin-info-table-store', 'data')],  # ← was cellValueChanged
-    [State('wbin-tag-dropdown', 'value'),
-     State('wbin-config-store', 'data'),
-     State('wbin-info-table', 'rowData'),
-     State('wbin-axis-config-grid', 'rowData'),
-     State('wbin-main-graph', 'figure')],
-    prevent_initial_call=True
-)
-def cb_render_graph(n_clicks, relayout_data, table_store,
-                    selected_indices, cfg, current_rows_state,
-                    axis_defs, current_fig):
-
-    if not selected_indices or not cfg:
-        return go.Figure(), []
-
-    current_rows = current_rows_state if current_rows_state is not None else []
-    axis_rows = axis_defs if axis_defs is not None else []
-    ctx = dash.callback_context
-    trigger = ctx.triggered[0]['prop_id'].split('.')[0]  # ← use component id now
-    today = datetime.now().date()
-
-    # --- [1. DATA LOADING] ---
-    with open(cfg['path'], 'rb') as f:
-        f.seek(cfg['data_offset'])
-        first_record = f.read(cfg['block_size'])
-    h0, m0, s0 = first_record[4], first_record[5], first_record[6]
-    start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
-
-    start_block, end_block = 0, cfg['total_blocks'] - 1
-
-    # --- [2. TRIGGER HANDLING] ---
-    if trigger == 'relayoutData' and relayout_data:
-        keys = set(relayout_data.keys())
-
-        # Pure y-axis or autosize interaction — skip redraw entirely
-        y_only_patterns = ('yaxis', 'autosize')
-        if all(any(k.startswith(p) for p in y_only_patterns) for k in keys):
-            return dash.no_update, dash.no_update
-
-        # X range changed — recalculate block range
-        if 'xaxis.range[0]' in relayout_data:
-            try:
-                x_start = datetime.fromisoformat(relayout_data['xaxis.range[0]'].replace('Z', ''))
-                x_end = datetime.fromisoformat(relayout_data['xaxis.range[1]'].replace('Z', ''))
-                start_block = max(0, int((x_start - start_dt).total_seconds()))
-                end_block = min(cfg['total_blocks'] - 1, int((x_end - start_dt).total_seconds()))
-            except:
-                pass
-
-    elif trigger == 'wbin-info-table-store' and current_fig:
-        # Recover x range from current figure so zoom is preserved
-        try:
-            xrange = current_fig['layout']['xaxis'].get('range')
-            if xrange:
-                x_start = datetime.fromisoformat(str(xrange[0]).replace('Z', ''))
-                x_end = datetime.fromisoformat(str(xrange[1]).replace('Z', ''))
-                start_block = max(0, int((x_start - start_dt).total_seconds()))
-                end_block = min(cfg['total_blocks'] - 1, int((x_end - start_dt).total_seconds()))
-        except:
-            pass
-
-    # --- [3. ROW SYNC] ---
-    colors = ['#636EFA', '#EF553B', '#00CC96', '#AB63FA', '#FFA15A', '#19D3F3', '#FF6692', '#B6E880']
-    new_rows = []
-    for i, sid in enumerate(selected_indices):
-        existing = next((r for r in current_rows if r.get('sid') == sid), None)
-        if existing:
-            existing['axis_id'] = int(existing.get('axis_id', 1))
-            new_rows.append(existing)
-        else:
-            v_type, v_idx = sid.split('_')
-            idx = int(v_idx)
-            ch_info = cfg['analog_channels'][idx] if v_type == 'A' else cfg['digital_channels'][idx]
-            new_rows.append({
-                "sid": sid,
-                "tag": ch_info['tag'],
-                "desc": ch_info.get('desc', 'N/A'),   # ← fill description
-                "axis_sel": "1",                        # ← default dropdown value
-                "color": colors[i % len(colors)],
-                "axis_id": 1,
-                "delete-row": "✘"
-            })
-    current_rows = new_rows
-
-    # Build axis map from config grid
-    used_ids = set(int(r['axis_id']) for r in current_rows)
-    existing_config_ids = set(int(a['id']) for a in axis_rows)
-    for aid in used_ids:
-        if aid not in existing_config_ids:
-            axis_rows.append({"id": aid, "name": f"Asse {aid}", "rangeMIN": "", "rangeMAX": ""})
-    axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
-    ax_map = {str(a['id']): a for a in axis_rows}
-
-    # --- [4. DATA READING] ---
-    actual_range = end_block - start_block
-    block_indices = np.linspace(start_block, end_block, min(n_pts, actual_range + 1)).astype(int)
-    data_dict = {sid: [] for sid in selected_indices}
-    time_axis = []
-
-    with open(cfg['path'], 'rb') as f:
-        for b_idx in block_indices:
-            f.seek(cfg['data_offset'] + (int(b_idx) * cfg['block_size']))
-            record = f.read(cfg['block_size'])
-            if len(record) < cfg['block_size']: break
-            time_axis.append(start_dt + timedelta(seconds=int(b_idx)))
-            for sid in selected_indices:
-                v_type, v_idx = sid.split('_')
-                idx = int(v_idx)
-                if v_type == 'A':
-                    val = struct.unpack('>f', record[13+(idx*4):13+(idx*4)+4])[0]
-                    data_dict[sid].append(val if abs(val) < 1e15 else 0.0)
-                else:
-                    ch = cfg['digital_channels'][idx]
-                    raw_word = record[13+(cfg['n_analog']*4)+(ch['group']*4):13+(cfg['n_analog']*4)+(ch['group']*4)+4]
-                    data_dict[sid].append((struct.unpack('<I', raw_word)[0] >> ch['bit']) & 1)
-
-    # --- [5. PLOT CONSTRUCTION] ---
-    fig = go.Figure()
-    used_ids_int = sorted(list(used_ids))
-    num_subplots = len(used_ids_int)
-
-    for row in current_rows:
-        aid = str(row['axis_id'])
-        fig.add_trace(go.Scattergl(
-            x=time_axis, y=data_dict[row['sid']], name=row['tag'],
-            yaxis=f"y{aid}" if aid != '1' else "y",
-            line=dict(color=row['color'], width=1.5),
-            showlegend=False,
-            hovertemplate="<b>" + row['tag'] + "</b>: %{y:.3f}<extra></extra>"
-        ))
-
-    # --- [6. LAYOUT CONSTRUCTION] ---
-    spacing = 0.08
-    p_height = (1.0 - (spacing * (max(1, num_subplots - 1)))) / max(1, num_subplots)
-
-    layout = {
-        "template": "plotly_white", "hovermode": "x unified", "hoverdistance": -1,
-        "autosize": True,
-        "margin": dict(t=30, b=50, l=100, r=200),
-        "uirevision": True,
-        "showlegend": False,
-        "annotations": [],
-        "xaxis": {"title": "Orario", "tickformat": "%H:%M:%S", "gridcolor": "#eee", "showspikes": True}
-    }
-
-    for i, aid_int in enumerate(used_ids_int):
-        aid = str(aid_int)
-        ax_key = f"yaxis{aid}" if aid != '1' else "yaxis"
-        ref_key = f"y{aid}" if aid != '1' else "y"
-
-        start_y = max(0, 1.0 - ((i + 1) * p_height) - (i * spacing))
-        end_y = min(1.0, start_y + p_height)
-        mid_y = start_y + (p_height / 2)
-
-        subplot_rows = [r for r in current_rows if int(r['axis_id']) == aid_int]
-        for j, row in enumerate(subplot_rows):
-            y_offset = (len(subplot_rows) / 2 - j) * 0.035
-            layout["annotations"].append(dict(
-                x=1.02, y=mid_y + y_offset,
-                xref="paper", yref="paper",
-                text=f"<b>{row['tag']}</b>",
-                showarrow=False,
-                font=dict(color=row['color'], size=11),
-                xanchor="left"
-            ))
-
-        conf = ax_map.get(aid, {})
-        layout[ax_key] = {
-            "domain": [start_y, end_y],
-            "title": {"text": conf.get('name', f'Asse {aid}'), "font": {"size": 12}},
-            "showgrid": True, "showticklabels": True, "matches": "x"
-        }
-
-        if i == num_subplots - 1:
-            layout["xaxis"]["anchor"] = ref_key
-
-    # --- [7. PRESERVE Y RANGES on cellValueChanged] ---
-    if trigger == 'cellValueChanged' and current_fig:
-        old_layout = current_fig.get('layout', {})
-        for aid_int in used_ids_int:
-            aid = str(aid_int)
-            ax_key = "yaxis" if aid == '1' else f"yaxis{aid}"
-            old_ax = old_layout.get(ax_key, {})
-            old_range = old_ax.get('range')
-            autorange = old_ax.get('autorange', True)
-
-            if old_range and not autorange:
-                # Axis existed before with manual range — preserve it
-                layout[ax_key]['range'] = old_range
-                layout[ax_key]['autorange'] = False
-            # Brand new axis — leave to autoscale
-
-    fig.update_layout(layout)
-    fig.update_traces(xaxis="x")
-
-    return fig, current_rows
-
-# cb_info_table_axis_sel writes to the store instead of rowData directly
-@callback(
-    [Output('wbin-info-table', 'rowData', allow_duplicate=True),
-     Output('wbin-axis-config-grid', 'rowData', allow_duplicate=True),
-     Output('wbin-info-table-store', 'data')],  # ← trigger for graph redraw
-    Input('wbin-info-table', 'cellValueChanged'),
-    [State('wbin-info-table', 'rowData'),
-     State('wbin-axis-config-grid', 'rowData')],
-    prevent_initial_call=True
-)
-def cb_info_table_axis_sel(cell_changed, info_rows, axis_rows):
-    if not cell_changed or not info_rows:
-        return no_update, no_update, no_update
-
-    changed = cell_changed[0]
-    if changed.get('colId') != 'axis_sel':
-        return no_update, no_update, no_update
-
-    selected = changed['value']
-    row_sid = changed['data']['sid']
-    axis_rows = [dict(r) for r in (axis_rows or [])]
-    info_rows = [dict(r) for r in info_rows]
-
-    if selected in AXIS_PRESETS and selected != 'Custom':
-        preset = AXIS_PRESETS[selected]
-        existing_axis = next(
-            (a for a in axis_rows if a.get('preset') == selected), None
-        )
-        if existing_axis:
-            target_id = int(existing_axis['id'])
-        else:
-            existing_ids = [int(a['id']) for a in axis_rows]
-            target_id = max(existing_ids) + 1 if existing_ids else 1
-            axis_rows.append({
-                "id": target_id,
-                "preset": selected,
-                "name": preset['name'],
-                "rangeMIN": preset['rangeMIN'],
-                "rangeMAX": preset['rangeMAX'],
-            })
-    else:
-        target_id = int(selected)
-        existing_ids = [int(a['id']) for a in axis_rows]
-        if target_id not in existing_ids:
-            axis_rows.append({
-                "id": target_id,
-                "preset": "Custom",
-                "name": f"Asse {target_id}",
-                "rangeMIN": "",
-                "rangeMAX": "",
-            })
-
-    for row in info_rows:
-        if row['sid'] == row_sid:
-            row['axis_id'] = target_id
-            row['axis_sel'] = selected
-            break
-
-    axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
-    return info_rows, axis_rows, {"ts": datetime.now().isoformat()}  # ← ping store
-
-
-@callback(
-    Output("wbin-axis-modal", "is_open"),
-    [Input("wbin-btn-axis-modal", "n_clicks"), Input("wbin-close-axis-modal", "n_clicks")],
-    State("wbin-axis-modal", "is_open")
-)
-def toggle_axis_modal(n1, n2, is_open):
-    if n1 or n2:
-        return not is_open
-    return is_open
 
 @callback(
     Output("wbin-axis-config-grid", "rowData", allow_duplicate=True),
@@ -1429,105 +1060,11 @@ def update_color_column_style(row_data, col_defs):
     return col_defs
 
 
-@callback(
-    [
-        Output('wbin-info-table', 'rowData', allow_duplicate=True),
-        Output('wbin-main-graph', 'figure', allow_duplicate=True),
-        Output('wbin-tag-dropdown', 'value', allow_duplicate=True),
-        Output('wbin-selected-row-store', 'data'),
-        Output('wbin-color-picker-modal', 'is_open'),
-        Output('wbin-color-edit-store', 'data'),
-        Output('wbin-color-input', 'value'),
-    ],
-    Input('wbin-info-table', 'cellClicked'),
-    [
-        State('wbin-info-table', 'rowData'),
-        State('wbin-main-graph', 'figure'),
-        State('wbin-tag-dropdown', 'value'),
-        State('wbin-config-store', 'data'),
-    ],
-    prevent_initial_call=True
-)
-def handle_table_logic(clicked, current_rows, fig, current_tags, cfg):
-
-    if not clicked or not current_rows:
-        return no_update, no_update, no_update, no_update, False, no_update, no_update
-
-    row_idx = clicked.get("rowIndex")
-    col_id = clicked.get("colId")
-
-# --- ADD THIS: If user clicks an editable column, do nothing and let them type ---
-    if col_id in ['axis_id', 'axis_range', 'axis_sel']:  # ← add 'axis_sel'
-        return no_update, no_update, no_update, no_update, False, no_update, no_update
-
-    if row_idx is None or row_idx >= len(current_rows):
-        return no_update, no_update, no_update, None, False, no_update, no_update
-
-    selected_tag = current_rows[row_idx]['tag']
-
-    # ─────────────────────────────
-    # CASE A: DELETE COLUMN
-    # ─────────────────────────────
-    if col_id == 'delete-row':
-
-        new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
-
-        if fig and 'data' in fig:
-            fig['data'] = [
-                t for t in fig['data']
-                if selected_tag not in t.get('name', '')
-            ]
-
-        new_tags = []
-        if current_tags:
-            for sid in current_tags:
-                if get_tagname_from_sid(sid, cfg) != selected_tag:
-                    new_tags.append(sid)
-
-        return new_table, fig, new_tags, None, False, None, None
-
-    # ─────────────────────────────
-    # CASE B: COLOR COLUMN
-    # ─────────────────────────────
-    elif col_id == 'color':
-
-        current_color = current_rows[row_idx].get('color', '#0000FF')
-
-        return (
-            no_update,
-            no_update,
-            no_update,
-            selected_tag,
-            True,
-            row_idx,
-            {"hex": current_color}
-        )
-
-    # ─────────────────────────────
-    # CASE C: OTHER CELLS (HIGHLIGHT)
-    # ─────────────────────────────
-    else:
-        # update figure traces
-        if fig and 'data' in fig:
-            for trace in fig['data']:
-                if selected_tag in trace.get('name', ''):
-                    trace['line']['width'] = 4
-                else:
-                    trace['line']['width'] = 1.5
-            fig['layout']['uirevision'] = 'constant'
-        
-        new_rows = []
-        for r in current_rows:
-            r = dict(r)
-            r['_selected'] = (r['tag'] == selected_tag)
-            new_rows.append(r)
-        
-        return new_rows, fig, no_update, selected_tag, False, None, None
-     
 # CALLBACK PER SALVARE IL NUOVO COLORE SELEZIONATO
 @callback(
     [Output('wbin-info-table', 'rowData', allow_duplicate=True),
-     Output('wbin-color-picker-modal', 'is_open', allow_duplicate=True)],
+     Output('wbin-color-picker-modal', 'is_open', allow_duplicate=True),
+     Output('wbin-redraw-store', 'data', allow_duplicate=True)],  # ← add
     Input('wbin-color-confirm', 'n_clicks'),
     [State('wbin-color-input', 'value'),
      State('wbin-color-edit-store', 'data'),
@@ -1536,23 +1073,21 @@ def handle_table_logic(clicked, current_rows, fig, current_tags, cfg):
 )
 def update_row_color(n_clicks, color_value, row_idx, current_rows):
     if n_clicks is None or row_idx is None:
-        return no_update, False
-    
-    # ESTRAZIONE CORRETTA: color_value è un dizionario {'hex': '#...', 'rgb': {...}, 'hsv': {...}}
-    # Dobbiamo passare alla DataTable solo la stringa HEX
-    new_hex = "#0000FF" # Default di sicurezza
+        return no_update, False, no_update
+
+    new_hex = "#0000FF"
     if isinstance(color_value, dict) and 'hex' in color_value:
         new_hex = color_value['hex']
     elif isinstance(color_value, str):
         new_hex = color_value
-    
+
     if row_idx < len(current_rows):
-        # Cloniamo i dati per sicurezza prima di modificare
         new_rows = [row.copy() for row in current_rows]
         new_rows[row_idx]['color'] = new_hex
-        return new_rows, False
-    
-    return no_update, False
+        ping = {"ts": datetime.now().isoformat(), "reason": "color"}
+        return new_rows, False, ping  # ← triggers cb_render_graph
+
+    return no_update, False, no_update
 
 @callback(
     Output('wbin-main-graph', 'figure', allow_duplicate=True),
@@ -1573,3 +1108,575 @@ def sync_table_color_to_graph(table_data, fig):
 
     fig['layout']['uirevision'] = 'constant'
     return fig
+
+
+# ------------- NEW SHIT
+
+# ─── CONSTANTS ────────────────────────────────────────────────────────────────
+
+
+
+# ─── HELPERS ──────────────────────────────────────────────────────────────────
+
+def _ax_key(aid_int):
+    """Plotly axis key from integer axis id."""
+    return "yaxis" if aid_int == 1 else f"yaxis{aid_int}"
+
+def _read_blocks(cfg, start_block, end_block, selected_indices, start_dt, n_pts=500):
+    """Read binary file and return (time_axis, data_dict)."""
+    actual_range  = max(1, end_block - start_block)
+    block_indices = np.linspace(start_block, end_block,
+                                min(n_pts, actual_range + 1)).astype(int)
+    data_dict = {sid: [] for sid in selected_indices}
+    time_axis = []
+    with open(cfg['path'], 'rb') as f:
+        for b_idx in block_indices:
+            f.seek(cfg['data_offset'] + int(b_idx) * cfg['block_size'])
+            record = f.read(cfg['block_size'])
+            if len(record) < cfg['block_size']:
+                break
+            time_axis.append(start_dt + timedelta(seconds=int(b_idx)))
+            for sid in selected_indices:
+                v_type, v_idx = sid.split('_')
+                idx = int(v_idx)
+                if v_type == 'A':
+                    val = struct.unpack('>f', record[13+(idx*4):13+(idx*4)+4])[0]
+                    data_dict[sid].append(val if abs(val) < 1e15 else 0.0)
+                else:
+                    ch = cfg['digital_channels'][idx]
+                    raw = record[13+(cfg['n_analog']*4)+(ch['group']*4):
+                                 13+(cfg['n_analog']*4)+(ch['group']*4)+4]
+                    data_dict[sid].append((struct.unpack('<I', raw)[0] >> ch['bit']) & 1)
+    return time_axis, data_dict
+
+def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
+    """Build complete figure from rows, data and axis config."""
+    fig          = go.Figure()
+    used_ids_int = sorted(set(int(r['axis_id']) for r in current_rows))
+    num_subplots = len(used_ids_int)
+    spacing      = 0.08
+    p_height     = (1.0 - spacing * max(1, num_subplots - 1)) / max(1, num_subplots)
+
+    for row in current_rows:
+        aid = str(row['axis_id'])
+        fig.add_trace(go.Scattergl(
+            x=time_axis, y=data_dict[row['sid']], name=row['tag'],
+            yaxis=f"y{aid}" if aid != '1' else "y",
+            line=dict(color=row['color'], width=1.5),
+            showlegend=False,
+            hovertemplate=f"<b>{row['tag']}</b>: %{{y:.3f}}<extra></extra>"
+        ))
+
+    layout = {
+        "template":      "plotly_white",
+        "hovermode":     "x unified",
+        "hoverdistance": -1,
+        "autosize":      True,
+        "margin":        dict(t=30, b=50, l=100, r=200),
+        "uirevision":    "static",
+        "showlegend":    False,
+        "annotations":   [],
+        "xaxis": {
+            "title":      "Orario",
+            "tickformat": "%H:%M:%S",
+            "gridcolor":  "#eee",
+            "showspikes": True,
+        }
+    }
+
+    for i, aid_int in enumerate(used_ids_int):
+        aid     = str(aid_int)
+        ak      = _ax_key(aid_int)
+        ref_key = "y" if aid == '1' else f"y{aid}"
+
+        start_y = max(0.0, 1.0 - (i + 1) * p_height - i * spacing)
+        end_y   = min(1.0, start_y + p_height)
+        mid_y   = start_y + p_height / 2
+
+        # DIY legend
+        subplot_rows = [r for r in current_rows if int(r['axis_id']) == aid_int]
+        for j, row in enumerate(subplot_rows):
+            y_off = (len(subplot_rows) / 2 - j) * 0.035
+            layout["annotations"].append(dict(
+                x=1.02, y=mid_y + y_off,
+                xref="paper", yref="paper",
+                text=f"<b>{row['tag']}</b>",
+                showarrow=False,
+                font=dict(color=row['color'], size=11),
+                xanchor="left"
+            ))
+
+        conf = ax_map.get(aid, {})
+
+        # Y range priority: y_store (drag/modal) > preset > autoscale
+        stored = y_store.get(ak) if y_store else None
+        if isinstance(stored, list) and len(stored) == 2 and None not in stored:
+            y_range   = stored
+            autorange = False
+        else:
+            try:
+                y_range   = [float(conf['rangeMIN']), float(conf['rangeMAX'])]
+                autorange = False
+            except (ValueError, TypeError, KeyError):
+                y_range   = None
+                autorange = True
+
+        ax_def = {
+            "domain":         [start_y, end_y],
+            "title":          {"text": conf.get('name', f'Asse {aid}'), "font": {"size": 12}},
+            "showgrid":       True,
+            "showticklabels": True,
+            "matches":        "x",
+            "autorange":      autorange,
+        }
+        if y_range:
+            ax_def["range"] = y_range
+
+        layout[ak] = ax_def
+
+        if i == num_subplots - 1:
+            layout["xaxis"]["anchor"] = ref_key
+
+    fig.update_layout(layout)
+    fig.update_traces(xaxis="x")
+    return fig
+
+
+# ─── 1. TRACK X RANGE ─────────────────────────────────────────────────────────
+# Job: keep wbin-x-range-store in sync with whatever x window the user sees.
+
+@callback(
+    Output('wbin-x-range-store', 'data'),
+    Input('wbin-main-graph', 'relayoutData'),
+    prevent_initial_call=True
+)
+def cb_track_x_range(relayout_data):
+    if not relayout_data:
+        return no_update
+    if 'xaxis.range[0]' in relayout_data:
+        return {
+            'x0': str(relayout_data['xaxis.range[0]']).replace('Z', ''),
+            'x1': str(relayout_data['xaxis.range[1]']).replace('Z', ''),
+        }
+    if relayout_data.get('xaxis.autorange'):
+        return {}
+    return no_update
+
+
+# ─── 2. TRACK Y RANGES ────────────────────────────────────────────────────────
+# Job: keep wbin-y-ranges-store in sync with y drags only.
+# Does NOT touch the figure — just records what the user dragged to.
+
+@callback(
+    Output('wbin-y-ranges-store', 'data'),
+    Input('wbin-main-graph', 'relayoutData'),
+    State('wbin-y-ranges-store', 'data'),
+    prevent_initial_call=True
+)
+def cb_track_y_ranges(relayout_data, current_store):
+    if not relayout_data:
+        return no_update
+
+    has_y = any(k.startswith('yaxis') for k in relayout_data)
+    if not has_y:
+        return no_update
+
+    store   = dict(current_store or {})
+    updated = False
+
+    for key, val in relayout_data.items():
+        if '.range[' in key and key.startswith('yaxis'):
+            ak  = key.split('.range[')[0]
+            idx = int(key.split('[')[1].rstrip(']'))
+            if not isinstance(store.get(ak), list):
+                store[ak] = [None, None]
+            store[ak][idx] = val
+            updated = True
+        elif key.startswith('yaxis') and '.autorange' in key:
+            ak = key.split('.autorange')[0]
+            store[ak] = None
+            updated = True
+
+    return store if updated else no_update
+
+
+# ─── 3. AXIS ASSIGNMENT FROM INFO TABLE ───────────────────────────────────────
+# Job: when user picks a preset or custom axis in the table:
+#   - update info_rows with new axis_id
+#   - update axis_config_grid with new axis entry if needed
+#   - pre-populate y_store with preset range so the graph applies it immediately
+#   - ping wbin-redraw-store to trigger graph redraw
+
+@callback(
+    [Output('wbin-info-table',       'rowData',          allow_duplicate=True),
+     Output('wbin-axis-config-grid', 'rowData',          allow_duplicate=True),
+     Output('wbin-y-ranges-store',   'data',             allow_duplicate=True),
+     Output('wbin-redraw-store',     'data')],
+    Input('wbin-info-table', 'cellValueChanged'),
+    [State('wbin-info-table',       'rowData'),
+     State('wbin-axis-config-grid', 'rowData'),
+     State('wbin-y-ranges-store',   'data')],
+    prevent_initial_call=True
+)
+def cb_axis_assigned(cell_changed, info_rows, axis_rows, y_store):
+    if not cell_changed or not info_rows:
+        return no_update, no_update, no_update, no_update
+
+    changed = cell_changed[0]
+    if changed.get('colId') != 'axis_sel':
+        return no_update, no_update, no_update, no_update
+
+    selected  = changed['value']
+    row_sid   = changed['data']['sid']
+    axis_rows = [dict(r) for r in (axis_rows or [])]
+    info_rows = [dict(r) for r in info_rows]
+    y_store   = dict(y_store or {})
+
+    if selected.isdigit():
+        # Custom axis 1-5 → IDs 101-105
+        target_id    = int(selected) + 100
+        existing_ids = [int(a['id']) for a in axis_rows]
+        if target_id not in existing_ids:
+            axis_rows.append({
+                "id": target_id, "preset": "Custom",
+                "name": f"Cust. {selected}", "rangeMIN": "", "rangeMAX": "",
+            })
+        # Custom axes use autoscale — clear any stored range
+        ak = _ax_key(target_id)
+        y_store[ak] = None
+
+    else:
+        # Named preset
+        preset        = AXIS_PRESETS.get(selected, {})
+        existing_axis = next((a for a in axis_rows if a.get('preset') == selected), None)
+
+        if existing_axis:
+            target_id = int(existing_axis['id'])
+        else:
+            preset_ids = [int(a['id']) for a in axis_rows if int(a['id']) < 100]
+            target_id  = max(preset_ids) + 1 if preset_ids else 1
+            axis_rows.append({
+                "id": target_id, "preset": selected,
+                "name":     preset.get('name', ''),
+                "rangeMIN": preset.get('rangeMIN', ''),
+                "rangeMAX": preset.get('rangeMAX', ''),
+            })
+
+        # Pre-populate y store with preset range
+        ak = _ax_key(target_id)
+        try:
+            y_store[ak] = [float(preset['rangeMIN']), float(preset['rangeMAX'])]
+        except (ValueError, TypeError, KeyError):
+            y_store[ak] = None
+
+    for row in info_rows:
+        if row['sid'] == row_sid:
+            row['axis_id']  = target_id
+            row['axis_sel'] = selected
+            break
+
+    axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
+    return info_rows, axis_rows, y_store, {"ts": datetime.now().isoformat()}
+
+
+# ─── 4. MAIN RENDER ───────────────────────────────────────────────────────────
+# Triggers: plot button, x zoom, redraw store (axis assignment / delete)
+# Never triggered by y drags.
+
+@callback(
+    [Output('wbin-main-graph',  'figure'),
+     Output('wbin-info-table',  'rowData')],
+    [Input('wbin-btn-plot',     'n_clicks'),
+     Input('wbin-main-graph',   'relayoutData'),
+     Input('wbin-redraw-store', 'data')],
+    [State('wbin-tag-dropdown',    'value'),
+     State('wbin-config-store',    'data'),
+     State('wbin-info-table',      'rowData'),
+     State('wbin-axis-config-grid','rowData'),
+     State('wbin-x-range-store',   'data'),
+     State('wbin-y-ranges-store',  'data')],
+    prevent_initial_call=True
+)
+def cb_render_graph(n_clicks, relayout_data, redraw_store,
+                    selected_indices, cfg, current_rows_state,
+                    axis_defs, x_store, y_store):
+
+    if not selected_indices or not cfg:
+        return go.Figure(), []
+
+    ctx     = dash.callback_context
+    trigger = ctx.triggered[0]['prop_id'].split('.')[0]
+
+    current_rows = list(current_rows_state or [])
+    axis_rows    = list(axis_defs or [])
+
+    # --- Start time ---
+    with open(cfg['path'], 'rb') as f:
+        f.seek(cfg['data_offset'])
+        rec = f.read(cfg['block_size'])
+    h0, m0, s0 = rec[4], rec[5], rec[6]
+    today    = datetime.now().date()
+    start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+
+    # --- Block range ---
+    start_block, end_block = 0, cfg['total_blocks'] - 1
+
+    if trigger == 'wbin-main-graph' and relayout_data:
+        keys = set(relayout_data)
+
+        # Pure y interaction — skip entirely, cb_track_y_ranges handles it
+        y_only = ('yaxis', 'autosize')
+        if all(any(k.startswith(p) for p in y_only) for k in keys):
+            return no_update, no_update
+
+        if 'xaxis.range[0]' in relayout_data:
+            try:
+                x0 = datetime.fromisoformat(relayout_data['xaxis.range[0]'].replace('Z',''))
+                x1 = datetime.fromisoformat(relayout_data['xaxis.range[1]'].replace('Z',''))
+                start_block = max(0, int((x0 - start_dt).total_seconds()))
+                end_block   = min(cfg['total_blocks']-1, int((x1 - start_dt).total_seconds()))
+            except:
+                pass
+
+    elif trigger == 'wbin-redraw-store':
+        # Recover x window from store
+        if x_store and x_store.get('x0'):
+            try:
+                x0 = datetime.fromisoformat(x_store['x0'])
+                x1 = datetime.fromisoformat(x_store['x1'])
+                start_block = max(0, int((x0 - start_dt).total_seconds()))
+                end_block   = min(cfg['total_blocks']-1, int((x1 - start_dt).total_seconds()))
+            except:
+                pass
+
+    # --- Row sync ---
+    colors = ['#636EFA','#EF553B','#00CC96','#AB63FA',
+              '#FFA15A','#19D3F3','#FF6692','#B6E880']
+    new_rows = []
+    for i, sid in enumerate(selected_indices):
+        existing = next((r for r in current_rows if r.get('sid') == sid), None)
+        if existing:
+            existing = dict(existing)
+            existing['axis_id'] = int(existing.get('axis_id', 1))
+            new_rows.append(existing)
+        else:
+            v_type, v_idx = sid.split('_')
+            idx     = int(v_idx)
+            ch_info = (cfg['analog_channels'][idx] if v_type == 'A'
+                       else cfg['digital_channels'][idx])
+            new_rows.append({
+                "sid":        sid,
+                "tag":        ch_info['tag'],
+                "desc":       ch_info.get('desc', 'N/A'),
+                "axis_sel":   "1",
+                "color":      colors[i % len(colors)],
+                "axis_id":    1,
+                "delete-row": "✘",
+                "_selected":  False,
+                "cur_val":    "",
+            })
+    current_rows = new_rows
+
+    # --- Axis map ---
+    used_ids     = set(int(r['axis_id']) for r in current_rows)
+    existing_ids = set(int(a['id']) for a in axis_rows)
+    for aid in used_ids:
+        if aid not in existing_ids:
+            axis_rows.append({
+                "id": aid, "preset": "Custom",
+                "name": f"Asse {aid}", "rangeMIN": "", "rangeMAX": "",
+            })
+    axis_rows = sorted(axis_rows, key=lambda x: int(x['id']))
+    ax_map    = {str(a['id']): a for a in axis_rows}
+
+    # --- Read data ---
+    time_axis, data_dict = _read_blocks(
+        cfg, start_block, end_block, selected_indices, start_dt
+    )
+
+    # --- Build figure (y_store is the single source of truth for ranges) ---
+    fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store)
+
+    return fig, current_rows
+
+
+# ─── 5. OPEN MODAL → SYNC GRID FROM Y STORE ───────────────────────────────────
+# Job: when modal opens, write current y ranges from store into grid.
+#      When modal closes, just close it (apply is a separate callback).
+
+@callback(
+    [Output('wbin-axis-modal',       'is_open'),
+     Output('wbin-axis-config-grid', 'rowData', allow_duplicate=True)],
+    [Input('wbin-btn-axis-modal',    'n_clicks'),
+     Input('wbin-close-axis-modal',  'n_clicks')],
+    [State('wbin-axis-modal',        'is_open'),
+     State('wbin-axis-config-grid',  'rowData'),
+     State('wbin-y-ranges-store',    'data')],
+    prevent_initial_call=True
+)
+def cb_modal_open_close(open_clicks, close_clicks, is_open, axis_rows, y_store):
+    trigger = dash.callback_context.triggered[0]['prop_id'].split('.')[0]
+
+    if trigger == 'wbin-btn-axis-modal' and not is_open:
+        if axis_rows:
+            new_rows = []
+            for row in axis_rows:
+                row = dict(row)
+                ak  = _ax_key(int(row['id']))
+                stored = (y_store or {}).get(ak)
+                if isinstance(stored, list) and len(stored) == 2 and None not in stored:
+                    row['rangeMIN'] = f"{stored[0]:.4g}"
+                    row['rangeMAX'] = f"{stored[1]:.4g}"
+                new_rows.append(row)
+            return True, new_rows
+        return True, no_update
+
+    return False, no_update
+
+
+# ─── 6. CLOSE MODAL → APPLY TO Y STORE + PATCH FIGURE ────────────────────────
+# Job: on Salva e Chiudi, write grid values into y store and patch figure.
+#      y store becomes the source of truth for the new manual ranges.
+
+@callback(
+    [Output('wbin-y-ranges-store', 'data',   allow_duplicate=True),
+     Output('wbin-main-graph',     'figure', allow_duplicate=True)],
+    Input('wbin-close-axis-modal', 'n_clicks'),
+    [State('wbin-axis-config-grid', 'rowData'),
+     State('wbin-info-table',       'rowData'),
+     State('wbin-main-graph',       'figure'),
+     State('wbin-y-ranges-store',   'data')],
+    prevent_initial_call=True
+)
+def cb_modal_save(n_clicks, axis_rows, info_rows, current_fig, y_store):
+    if not n_clicks or not axis_rows or not current_fig:
+        return no_update, no_update
+
+    y_store      = dict(y_store or {})
+    ax_map       = {str(a['id']): a for a in axis_rows}
+    used_ids     = sorted(set(int(r['axis_id']) for r in (info_rows or [])))
+    layout_patch = {}
+
+    for aid_int in used_ids:
+        aid  = str(aid_int)
+        ak   = _ax_key(aid_int)
+        conf = ax_map.get(aid, {})
+
+        ax_update = {
+            "title": {"text": conf.get('name', f'Asse {aid}'), "font": {"size": 12}}
+        }
+
+        try:
+            rmin = float(conf['rangeMIN'])
+            rmax = float(conf['rangeMAX'])
+            ax_update["range"]     = [rmin, rmax]
+            ax_update["autorange"] = False
+            y_store[ak]            = [rmin, rmax]   # ← write into store
+        except (ValueError, TypeError, KeyError):
+            ax_update["autorange"] = True
+            y_store[ak]            = None
+
+        layout_patch[ak] = ax_update
+
+    patched = go.Figure(current_fig)
+    patched.update_layout(layout_patch)
+    return y_store, patched
+
+
+# ─── 7. PRESET IN AXIS CONFIG GRID ────────────────────────────────────────────
+# Job: when preset dropdown is changed inside the modal grid,
+#      auto-fill name and rangeMIN/MAX for that row.
+
+@callback(
+    Output('wbin-axis-config-grid', 'rowData', allow_duplicate=True),
+    Input('wbin-axis-config-grid',  'cellValueChanged'),
+    State('wbin-axis-config-grid',  'rowData'),
+    prevent_initial_call=True
+)
+def cb_grid_preset_changed(cell_changed, axis_rows):
+    if not cell_changed or not axis_rows:
+        return no_update
+
+    changed = cell_changed[0]
+    if changed.get('colId') != 'preset':
+        return no_update
+
+    preset_key = changed['value']
+    row_id     = str(changed['data']['id'])
+    preset     = AXIS_PRESETS.get(preset_key)
+    if not preset:
+        return no_update
+
+    new_rows = []
+    for row in axis_rows:
+        row = dict(row)
+        if str(row['id']) == row_id:
+            row['preset'] = preset_key
+            if preset_key != 'Custom':
+                row['name']     = preset['name']
+                row['rangeMIN'] = preset['rangeMIN']
+                row['rangeMAX'] = preset['rangeMAX']
+        new_rows.append(row)
+    return new_rows
+
+
+# ─── 8. CELL CLICK: DELETE / COLOR / HIGHLIGHT ────────────────────────────────
+
+@callback(
+    [Output('wbin-info-table',        'rowData',  allow_duplicate=True),
+     Output('wbin-main-graph',        'figure',   allow_duplicate=True),
+     Output('wbin-tag-dropdown',      'value',    allow_duplicate=True),
+     Output('wbin-selected-row-store','data'),
+     Output('wbin-color-picker-modal','is_open'),
+     Output('wbin-color-edit-store',  'data'),
+     Output('wbin-color-input',       'value'),
+     Output('wbin-redraw-store',      'data',     allow_duplicate=True)],
+    Input('wbin-info-table', 'cellClicked'),
+    [State('wbin-info-table',  'rowData'),
+     State('wbin-main-graph',  'figure'),
+     State('wbin-tag-dropdown','value'),
+     State('wbin-config-store','data')],
+    prevent_initial_call=True
+)
+def cb_cell_clicked(clicked, current_rows, fig, current_tags, cfg):
+    nu = no_update
+    if not clicked or not current_rows:
+        return nu, nu, nu, nu, False, nu, nu, nu
+
+    row_idx = clicked.get("rowIndex")
+    col_id  = clicked.get("colId")
+
+    if col_id in ('axis_sel',):
+        return nu, nu, nu, nu, False, nu, nu, nu
+
+    if row_idx is None or row_idx >= len(current_rows):
+        return nu, nu, nu, None, False, nu, nu, nu
+
+    selected_tag = current_rows[row_idx]['tag']
+
+    if col_id == 'delete-row':
+        new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
+        if fig and 'data' in fig:
+            fig['data'] = [t for t in fig['data']
+                           if selected_tag not in t.get('name', '')]
+        new_tags = [sid for sid in (current_tags or [])
+                    if get_tagname_from_sid(sid, cfg) != selected_tag]
+        ping = {"ts": datetime.now().isoformat(), "reason": "delete"}
+        return new_table, fig, new_tags, None, False, None, None, ping
+
+    elif col_id == 'color':
+        current_color = current_rows[row_idx].get('color', '#0000FF')
+        return nu, nu, nu, selected_tag, True, row_idx, {"hex": current_color}, nu
+
+    else:
+        if fig and 'data' in fig:
+            for trace in fig['data']:
+                trace['line']['width'] = (4 if selected_tag in trace.get('name','')
+                                          else 1.5)
+            fig['layout']['uirevision'] = 'static'
+        new_rows = []
+        for r in current_rows:
+            r = dict(r)
+            r['_selected'] = (r['tag'] == selected_tag)
+            new_rows.append(r)
+        return new_rows, fig, nu, selected_tag, False, None, None, nu
