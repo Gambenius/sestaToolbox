@@ -5,7 +5,7 @@ import pandas as pd
 import plotly.graph_objects as go
 
 import dash
-from dash import html, dcc, callback, Input, Output, State, no_update
+from dash import html, dcc, callback, Input, Output, State, no_update, Patch
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import dash_ag_grid as dag
@@ -362,10 +362,19 @@ layout = dbc.Container([
             dbc.Row([
                 dbc.Col(dbc.Button("⚙️ CONFIGURA ASSI", id="wbin-btn-axis-modal", color="secondary", outline=True, size="sm"), width="auto"),
                 dbc.Col(html.Small("Usa la colonna 'Asse' per raggruppare i canali", className="text-muted"), className="text-end me-auto"),
+                dbc.Col([
+                    dbc.InputGroup([
+                        dbc.Button("−", id="wbin-btn-fontsize-down", color="secondary", outline=True, size="sm"),
+                        dbc.Input(id="wbin-fontsize-input", type="text", value="10",
+                                    debounce=True,   # ← fires only on Enter or blur
+                                    size="sm", style={"width": "52px", "textAlign": "center"}),
+                        dbc.Button("+", id="wbin-btn-fontsize-up", color="secondary", outline=True, size="sm"),
+                    ], size="sm"),
+                ], width="auto"),
                 dbc.Col(dbc.Button("🔍 Autoscale Y", id="wbin-btn-autoscale", color="secondary", outline=True, size="sm"), width="auto"),
                 dbc.Col(dbc.Button("📄 Salva come PDF", id="wbin-btn-export-pdf", color="secondary", outline=True, size="sm"), width="auto"),
                 dcc.Download(id='wbin-download-pdf'),
-            ], className="my-2 align-items-center"),
+            ], className="my-2 align-items-center g-2"),
             dag.AgGrid(
                 id='wbin-info-table',
                 dangerously_allow_code=True,
@@ -1091,7 +1100,7 @@ def update_row_color(n_clicks, color_value, row_idx, current_rows):
         new_rows = [row.copy() for row in current_rows]
         new_rows[row_idx]['color'] = new_hex
         ping = {"ts": datetime.now().isoformat(), "reason": "color"}
-        return new_rows, False, ping  # ← triggers cb_render_graph
+        return new_rows, False, ping  
 
     return no_update, False, no_update
 
@@ -1155,9 +1164,9 @@ def _read_blocks(cfg, start_block, end_block, selected_indices, start_dt, n_pts=
                     data_dict[sid].append((struct.unpack('<I', raw)[0] >> ch['bit']) & 1)
     return time_axis, data_dict
 
-def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
-    """Build complete figure from rows, data and axis config."""
+def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=10):
     fig          = go.Figure()
+    linewidth    = 1.5 * (1 + (font_size - 10) * 0.10)
     used_ids_int = sorted(set(int(r['axis_id']) for r in current_rows))
     num_subplots = len(used_ids_int)
     spacing      = 0.08
@@ -1168,13 +1177,14 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
         fig.add_trace(go.Scattergl(
             x=time_axis, y=data_dict[row['sid']], name=row['tag'],
             yaxis=f"y{aid}" if aid != '1' else "y",
-            line=dict(color=row['color'], width=1.5),
+            line=dict(color=row['color'], width=linewidth),
             showlegend=False,
             hovertemplate=f"<b>{row['tag']}</b>: %{{y:.3f}}<extra></extra>"
         ))
 
     layout = {
         "template":      "plotly_white",
+        "font": {"size": font_size},
         "hovermode":     "x unified",
         "hoverdistance": -1,
         "autosize":      True,
@@ -1208,7 +1218,7 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
                 xref="paper", yref="paper",
                 text=f"<b>{row['tag']}</b>",
                 showarrow=False,
-                font=dict(color=row['color'], size=11),
+                font=dict(color=row['color'], size=font_size),
                 xanchor="left"
             ))
 
@@ -1235,7 +1245,9 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store):
 
         ax_def = {
             "domain":         [start_y, end_y],
-            "title":          {"text": conf.get('name', f'Asse {aid}'), "font": {"size": 12}},
+            "title":          {"text": conf.get('name', f'Asse {aid}'),
+                            "font": {"size": font_size}},   # ← add
+            "tickfont":       {"size": font_size},              # ← add
             "showgrid":       True,
             "showticklabels": True,
             "matches":        "x",
@@ -1419,12 +1431,13 @@ def cb_cell_value_changed(cell_changed, info_rows, axis_rows, y_store):
      State('wbin-info-table',      'rowData'),
      State('wbin-axis-config-grid','rowData'),
      State('wbin-x-range-store',   'data'),
-     State('wbin-y-ranges-store',  'data')],
+     State('wbin-y-ranges-store',  'data'),
+    State('wbin-fontsize-input',   'value')],
     prevent_initial_call=True
 )
 def cb_render_graph(n_clicks, relayout_data, redraw_store,
                     selected_indices, cfg, current_rows_state,
-                    axis_defs, x_store, y_store):
+                    axis_defs, x_store, y_store,font_size):
 
     if not selected_indices or not cfg:
         return go.Figure(), []
@@ -1520,8 +1533,8 @@ def cb_render_graph(n_clicks, relayout_data, redraw_store,
     )
 
     # --- Build figure (y_store is the single source of truth for ranges) ---
-    fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store)
-
+    fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,font_size=int(font_size or 10))
+                        
     return fig, current_rows
 
 
@@ -1741,3 +1754,83 @@ def cb_autoscale_y(n_clicks, info_rows):
         ak = _ax_key(int(row['axis_id']))
         y_store[ak] = "auto"   # ← sentinel, not None, not a list
     return y_store, {"ts": datetime.now().isoformat(), "reason": "autoscale"}
+
+# Change fontsize with buttons
+    
+@callback(
+    Output('wbin-fontsize-input', 'value'),
+    [Input('wbin-btn-fontsize-down', 'n_clicks'),
+     Input('wbin-btn-fontsize-up',   'n_clicks'),
+     Input('wbin-fontsize-input',    'value')],  # debounced, fires on Enter/blur
+    prevent_initial_call=True
+)
+def cb_fontsize_buttons(down, up, typed):
+    trigger = dash.callback_context.triggered[0]['prop_id'].split('.')[0]
+    minSize = 6
+    maxSize = 20
+    if trigger == 'wbin-btn-fontsize-down':
+        try:
+            return str(max(minSize, int(typed or 10) - 1))
+        except ValueError:
+            return "10"
+    if trigger == 'wbin-btn-fontsize-up':
+        try:
+            return str(min(maxSize, int(typed or 10) + 1))
+        except ValueError:
+            return "10"
+
+    # Enter or blur — clamp
+    try:
+        return str(max(minSize, min(maxSize, int(typed))))
+    except ValueError:
+        return "10"
+    
+
+@callback(
+    Output('wbin-main-graph', 'figure', allow_duplicate=True),
+    Input('wbin-fontsize-input', 'value'),
+    [State('wbin-main-graph', 'figure'),
+     State('wbin-info-table', 'rowData')],
+    prevent_initial_call=True
+)
+def cb_apply_fontsize(font_size, figure, info_rows):
+    if not figure or not font_size:
+        return no_update
+
+    fs        = int(font_size)
+    linewidth = 1.5 * (1 + (fs - 10) * 0.10)
+
+    patched = Patch()   # ← from dash import Patch
+
+    patched['layout']['font']                    = {"size": fs}
+    patched['layout']['xaxis']['title']['font']  = {"size": fs}
+    patched['layout']['xaxis']['tickfont']       = {"size": fs}
+
+    # Yaxes
+    old_layout = figure.get('layout', {})
+    for key in old_layout:
+        if key.startswith('yaxis'):
+            patched['layout'][key]['title']['font'] = {"size": fs}
+            patched['layout'][key]['tickfont']      = {"size": fs}
+
+    # Annotations (DIY legend)
+    old_annotations = old_layout.get('annotations', [])
+    new_annotations = []
+    for ann in old_annotations:
+        ann = dict(ann)
+        ann['font'] = dict(ann.get('font', {}))
+        ann['font']['size'] = fs
+        new_annotations.append(ann)
+    patched['layout']['annotations'] = new_annotations
+
+    # Traces
+    for i in range(len(figure.get('data', []))):
+        patched['data'][i]['line']['width'] = linewidth
+
+    return patched
+
+
+
+
+
+
