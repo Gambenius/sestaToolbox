@@ -9,6 +9,7 @@ from dash import html, dcc, callback, Input, Output, State, no_update, Patch
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import dash_ag_grid as dag
+from utils import data_processor as dp
 
 
 # Registrazione della pagina
@@ -33,144 +34,15 @@ AXIS_DROPDOWN_OPTIONS = list(AXIS_PRESETS.keys()) + ["1", "2", "3", "4", "5"]
 
 n_pts = 1000 #shown in plots
 
-# NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
-NETWORK_BASE_PATH = r"/home/edoardo/Documenti/sestaToolbox/data"
+NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
+# NETWORK_BASE_PATH = r"/home/edoardo/Documenti/sestaToolbox/data"
 
 PRESETS_FILE = "utils/binrev_presets.txt"
 # ─────────────────────────────────────────────────────────────────
 # 1. LOGICA DI ESTRAZIONE METADATI (Mantenuta e rifinita)
 # ─────────────────────────────────────────────────────────────────
 
-def get_wbin_metadata(path):
-    MARKER = b'[END]'
-    MARKER_DIG = '[DIGITAL]'
-    
-    with open(path, 'rb') as f:
-        blob = f.read(2048 * 1024)
-    
-    cuts = [m.start() for m in re.finditer(re.escape(MARKER), blob)]
-    if len(cuts) < 2:
-        raise ValueError("Marker [END] non trovati.")
 
-    # ───── HEADER PARTS (CRITICAL) ─────
-    part1 = blob[:cuts[0]].decode('latin-1', errors='ignore')
-    part2 = blob[cuts[0]:cuts[1]].decode('latin-1', errors='ignore')
-
-    lines = part1.split('\n')   # only \n
-
-    # ───── CAMPAIGN ─────
-    campaign_info = {"campaign": "N/A", "customer": "N/A", "coordinator": "N/A"}
-    if lines:
-        parts = [p.strip() for p in lines[0].split('\t') if p.strip()]
-        if len(parts) >= 4:
-            campaign_info = {
-                "campaign": parts[1],
-                "customer": parts[2],
-                "coordinator": parts[3]
-            }
-
-    # ───── ANALOG ─────
-    analog_channels = []
-    hdr_map = {}
-    parsing_analog = False
-
-    for line in lines:
-        cols = [c.strip() for c in line.split('\t')]
-        
-        if 'Tag' in cols:
-            hdr_map = {col: i for i, col in enumerate(cols)}
-            parsing_analog = True
-            continue
-        
-        if parsing_analog and len(cols) > 1:
-            tag = cols[hdr_map.get('Tag', 0)].upper()
-            if tag:
-                analog_channels.append({
-                    'tag': tag,
-                    'unit': cols[hdr_map.get('EU', 1)] if 'EU' in hdr_map else "",
-                    'desc': cols[hdr_map.get('Comment', 2)] if 'Comment' in hdr_map else ""
-                })
-
-    # ───── DIGITAL (MAPPATURA TAG <-> DESCRIZIONE) ─────
-    digital_channels = []
-    group_idx = 0
-
-    for line in part2.split('\n'):
-        line = line.strip()
-        if not line or MARKER_DIG in line.upper() or not line.upper().startswith('DIGITAL'):
-            continue
-        
-        cols = line.split('\t')
-        
-        # Cerchiamo la colonna dei tag (quella con le virgole)
-        try:
-            v_col = next((i for i, c in enumerate(cols) if ',' in c), 1)
-        except StopIteration:
-            continue 
-
-        if v_col < len(cols):
-            # Split dei TAG (es. Z50XL108, Z50XU108...)
-            tags = [t.strip() for t in cols[v_col].split(',') if t.strip()]
-            
-            # Split delle DESCRIZIONI (es. Min ecc statica..., Reg ecc...)
-            # Usiamo la colonna successiva v_col + 1
-            descs = []
-            if len(cols) > (v_col + 1):
-                descs = [d.strip() for d in cols[v_col + 1].split(',')]
-
-            for bit_idx, tag in enumerate(tags[:32]):
-                # Prendiamo la descrizione corrispondente per indice
-                # Se per qualche motivo il file ha meno descrizioni dei tag, evitiamo il crash
-                current_desc = descs[bit_idx] if bit_idx < len(descs) else ""
-                
-                digital_channels.append({
-                    'tag': tag.upper(),
-                    'group': group_idx,
-                    'bit': bit_idx,
-                    'type': 'D',
-                    'desc': current_desc # <--- ECCOLA QUI!
-                })
-            
-            group_idx += 1
-
-    # ───── OFFSET (USE VERSION 2 LOGIC) ─────
-    match = re.search(r'#(\d{9})', part1)
-    data_offset = int(match.group(1)) if match else 0
-
-    # ───── BLOCK SIZE (CRITICAL FIX) ─────
-    n_analog = len(analog_channels)
-
-    # use REAL digital word count (NOT parsed groups)
-    n_uint32 = len([l for l in part2.split('\n') if ',' in l and '\t' in l])
-
-    block_size = 13 + (n_analog * 4) + (n_uint32 * 4)
-
-    total_blocks = (os.path.getsize(path) - data_offset) // block_size
-    file_size = os.path.getsize(path)
-
-    # 4. Estrazione orari dal binario
-    with open(path, 'rb') as f:
-        # Orario d'inizio
-        f.seek(data_offset)
-        s_rec = f.read(7)
-        t_start = f"{s_rec[4]:02d}:{s_rec[5]:02d}:{s_rec[6]:02d}"
-        
-        # Orario di fine (Usa file_size e block_size appena definiti)
-        f.seek(file_size - block_size)
-        e_rec = f.read(7)
-        t_end = f"{e_rec[4]:02d}:{e_rec[5]:02d}:{e_rec[6]:02d}"
-    return {
-        'path': path,
-        'data_offset': data_offset,
-        'block_size': block_size,
-        'total_blocks': total_blocks,
-        'n_analog': n_analog,
-        'analog_channels': analog_channels,
-        'digital_channels': digital_channels,
-        'meta': campaign_info,
-        'start_time': t_start,
-        'end_time': t_end,
-    }
 
 # ─────────────────────────────────────────────────────────────────
 # 2. LAYOUT LIGHT MODE (Bootstrap Standard)
@@ -583,7 +455,7 @@ def cb_load_file(n_clicks, selected_path):
     if not selected_path or not os.path.exists(selected_path):
         return no_update, no_update, dbc.Alert("File non valido o non trovato.", color="danger", className="small")
     try:
-        cfg = get_wbin_metadata(selected_path)
+        cfg = dp.get_wbin_metadata(selected_path)
         n_analog = cfg.get('n_analog', 0)
         n_digital = len(cfg.get('digital_channels', []))
         m = cfg.get('meta', {'campaign': 'N/A', 'customer': 'N/A', 'coordinator': 'N/A'})
