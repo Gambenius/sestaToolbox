@@ -33,8 +33,8 @@ layout = dbc.Container([
                     dcc.Upload(id='up-chem', children=html.Div(['Trascina o ', html.A('Seleziona')]),
                                style={'width': '100%', 'height': '50px', 'lineHeight': '50px', 'borderWidth': '1px', 'borderStyle': 'dashed', 'borderRadius': '5px', 'textAlign': 'center', 'marginBottom': '15px'}),
                     html.Label("2. Range Temporale"),
-                    dbc.Input(id="t-start", type="text", value="15:43:00", className="mb-1"),
-                    dbc.Input(id="t-end", type="text", value="19:36:00", className="mb-4"),
+                    dbc.Input(id="t-start", type="text", value="00:00:00", className="mb-1"),
+                    dbc.Input(id="t-end", type="text", value="23:59:00", className="mb-4"),
                     dbc.Button("Aggiorna Analisi", id="btn-chem", color="primary", className="w-100"),
                 ])
             ], className="shadow-sm"),
@@ -67,7 +67,7 @@ def update_all_plots(n, active_tab, contents, t1_str, t2_str):
         df = pd.read_csv(io.StringIO(base64.b64decode(s).decode('utf-8')))
         df.columns = [c.strip() for c in df.columns]
         
-        df['TIME_dt'] = pd.to_datetime(df['TIME'], format='%H:%M:%S')
+        df['TIME_dt'] = pd.to_datetime(df['Time'], format='%H:%M:%S')
         t1 = datetime.strptime(t1_str, '%H:%M:%S').time()
         t2 = datetime.strptime(t2_str, '%H:%M:%S').time()
         mask = (df['TIME_dt'].dt.time >= t1) & (df['TIME_dt'].dt.time <= t2)
