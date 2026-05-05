@@ -5,8 +5,10 @@ import pandas as pd
 import os
 from datetime import datetime
 from utils import data_processor as dp
-import re
-# --- Configuration & Data ---
+import dash_ag_grid as dag 
+
+
+#region CONFIG
 NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
 file_path = r"\\10.33.126.101\archivi\BinRev 3.0\consumption.json"
 
@@ -17,34 +19,7 @@ columns = ["Tag", "Description", "Algorithm", "Group", "ConversionFactor", "Meas
 dfCons = dfCons[columns].sort_values(by="Group").reset_index(drop=True)
 dfCons['Selected'] = False
 
-# --- Helper Functions ---
-def format_file_size(size_bytes: int) -> str:
-    for unit in ['B', 'KB', 'MB', 'GB']:
-        if size_bytes < 1024.0:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024.0
-    return f"{size_bytes:.1f} TB"
-
-def list_bin_files(folder_path: str) -> list:
-    files = []
-    if not os.path.exists(folder_path):
-        return files
-    for f in os.listdir(folder_path):
-        if f.lower().endswith('.bin'):
-            full = os.path.join(folder_path, f)
-            try:
-                stat = os.stat(full)
-                mtime = datetime.fromtimestamp(stat.st_mtime)
-                files.append({
-                    'label': f"{f}  |  {mtime.strftime('%Y-%m-%d %H:%M')}  |  {format_file_size(stat.st_size)}",
-                    'value': full,
-                })
-            except:
-                files.append({'label': f, 'value': full})
-    files.sort(key=lambda x: x['value'])
-    return files
-
-# --- Layout ---
+#region LAYOUT
 layout = html.Div([
     # Add this inside your layout Div
     html.Div([
@@ -105,8 +80,37 @@ layout = html.Div([
             dbc.Button("✅ Carica File", id="cons-btn-load-file", color="primary", disabled=True)
         ]),
     ], id="cons-file-modal", is_open=False),
+    # RESULTS PREVIEW
+    html.Div(id="cons-results-container", children=[
+        html.Div([
+            dbc.Row([
+                dbc.Col(html.H5("Risultati Calcolo Consumi", className="text-success"), width=True),
+                dbc.Col(dbc.Button("📥 Scarica CSV", id="btn-export-csv", color="outline-success", size="sm"), width="auto"),
+            ], align="center", className="mb-2"),
+            
+            dag.AgGrid(
+                id="cons-results-grid",
+                columnDefs=[
+                    {"field": "Tag", "headerName": "TAG", "checkboxSelection": False},
+                    {"field": "Description", "headerName": "DESCRIZIONE", "flex": 2},
+                    {"field": "Value", "headerName": "VALUE", "valueFormatter": 'params.value ? params.value : ""'},
+                    {"field": "MeasurementUnit", "headerName": "UNIT", "width": 100},
+                ],
+                rowData=[],
+                dashGridOptions={
+                    "rowSelection": "multiple", 
+                    "animateRows": False,
+                    "domLayout": "autoHeight"
+                },
+                columnSize="responsiveSizeToFit",
+                defaultColDef={"resizable": True, "sortable": True, "filter": True},
+                style={"width": "100%"}
+            ),
+            html.Hr(className="my-4"),
+        ], id="cons-results-inner", style={"display": "none"}) # Hidden by default
+    ]),
 
-    # Selection Controls
+    # MASTER SELECT ALL (Full Width)
     dbc.Card([
         dbc.CardBody(
             dbc.Checkbox(
@@ -116,37 +120,75 @@ layout = html.Div([
                 className="fw-bold text-primary"
             )
         )
-    ], className="mb-4 border-primary"),
+    ], className="mb-4 border-primary shadow-sm"),
 
-    html.Div(id="groups-container", children=[]),
-], className="p-4")
+    # The groups will be injected here as a dbc.Row with 2 Cols
+    html.Div(id="groups-container"),
+], className="p-4 bg-white", style={"minHeight": "100vh"})
 
-# --- Callbacks ---
+#region CALLBACKS
 
 # 1. Render Groups on Load
+# ------------- render groups (Balanced 2-Column Version)
 @callback(
     Output("groups-container", "children"),
-    Input("groups-container", "id")
+    Input("groups-container", "id") 
 )
 def render_groups(_):
-    cards = []
-    for group_name in dfCons['Group'].unique():
+    col_left = []
+    col_right = []
+    
+    # Track the "height" of each column based on number of tags
+    height_left = 0
+    height_right = 0
+
+    # Get groups and sort them by size (optional, but helps balancing)
+    unique_groups = dfCons['Group'].unique()
+    
+    for group_name in unique_groups:
         group_df = dfCons[dfCons['Group'] == group_name]
+        num_tags = len(group_df)
+        
+        # Build the Card
         header = dbc.Row([
-            dbc.Col(html.B(group_name)),
-            dbc.Col(dbc.Checkbox(
-                id={'type': 'select-all', 'index': group_name},
-                label="Select All", value=False, className="small"
-            ), width="auto")
+            dbc.Col(html.B(group_name.upper())),
+            dbc.Col(
+                dbc.Checkbox(
+                    id={'type': 'select-all', 'index': group_name},
+                    label="Select All", value=False, className="small"
+                ), width="auto"
+            )
         ], align="center")
 
         checklist = dbc.Checklist(
-            options=[{"label": f"{r['Description']} - {r['Tag']}", "value": r['Tag']} for _, r in group_df.iterrows()],
+            options=[
+                {"label": f"{row['Description']} - {row['Tag']}", "value": row['Tag']}
+                for _, row in group_df.iterrows()
+            ],
             value=[],
             id={'type': 'tag-checklist', 'index': group_name},
+            className="cons-checklist" # Custom class for styling if needed
         )
-        cards.append(dbc.Card([dbc.CardHeader(header), dbc.CardBody(checklist)], className="mb-3"))
-    return cards
+
+        card = dbc.Card([
+            dbc.CardHeader(header),
+            dbc.CardBody(checklist)
+        ], className="mb-3 shadow-sm")
+
+        # Decide which column to place it in based on current height
+        if height_left <= height_right:
+            col_left.append(card)
+            height_left += (num_tags + 4) # +4 accounts for header/spacing
+        else:
+            col_right.append(card)
+            height_right += (num_tags + 4)
+
+    # Return a Row containing two Columns
+    return dbc.Row([
+        dbc.Col(col_left, width=12, lg=6),
+        dbc.Col(col_right, width=12, lg=6)
+    ])
+
 
 # 2. Consolidated Modal Toggle & File Listing
 @callback(
@@ -202,8 +244,8 @@ def cb_select_file(selected_path):
 @callback(
     [Output('cons-config-store', 'data'),
      Output('cons-file-info', 'children'),
-     Output('cons-status-msg', 'children')],
-    Input('cons-btn-load-file', 'n_clicks'),
+     Output("cons-status-msg", "children", allow_duplicate=True)],
+    Input('cons-btn-load-file', 'n_clicks'),    
     State('cons-selected-path', 'data'),
     prevent_initial_call=True
 )
@@ -288,61 +330,190 @@ def manage_exclusions(add_n, rem_n, current_children):
 
     return no_update
 
+# @callback(
+#     [Output("cons-results-inner", "style"),
+#      Output("cons-results-grid", "rowData"),
+#      Output("cons-status-msg", "children", allow_duplicate=True)],
+#     Input("btn-calculate", "n_clicks"),
+#     [State("time-start-comp", "value"),
+#      State("time-stop-comp", "value"),
+#      State({'type': 'exclude-start', 'index': ALL}, 'value'),
+#      State({'type': 'exclude-end', 'index': ALL}, 'value'),
+#      State("selected-tags-store", "data"),
+#      State("cons-selected-path", "data")],
+#     prevent_initial_call=True
+# )
+# def run_calculations(n, start_comp, stop_comp, ex_starts, ex_ends, selected_tags, file_path):
+#     if not file_path:
+#         return no_update, no_update, dbc.Alert("⚠️ Carica prima un file binario!", color="danger")
+#     if not selected_tags:
+#         return no_update, no_update, dbc.Alert("⚠️ Seleziona almeno un tag!", color="warning")
+
+#     # --- Time Validations (from previous step) ---
+#     if start_comp >= stop_comp:
+#         return no_update, no_update, dbc.Alert("❌ Errore Orario Compressore", color="danger")
+    
+#     # Check for increasing order in exclusions
+#     for i in range(len(ex_starts) - 1):
+#         if ex_ends[i] > ex_starts[i+1]:
+#             return no_update, no_update, dbc.Alert(f"❌ Errore Sequenza Esclusioni", color="danger")
+
+#     # --- Prepare AG Grid Data ---
+#     # Filter the main dataframe for the selected tags
+#     results_df = dfCons[dfCons['Tag'].isin(selected_tags)].copy()
+    
+#     # Initialize the "Value" column as empty for now
+#     results_df['Value'] = "" 
+    
+#     # Convert to dictionary for AG Grid
+#     grid_data = results_df.to_dict('records')
+
+#     # Show the grid container and update data
+#     return {"display": "block"}, grid_data, dbc.Alert("✅ Calcolo completato. Risultati pronti.", color="success")
 
 
 @callback(
-    Output("cons-status-msg", "children", allow_duplicate=True),
+    Output("cons-results-grid", "exportDataAsCsv"),
+    Input("btn-export-csv", "n_clicks"),
+    prevent_initial_call=True
+)
+def export_results_csv(n):
+    if n:
+        return True
+    return False
+
+@callback(
+    [Output("cons-results-inner", "style"),
+     Output("cons-results-grid", "rowData"),
+     Output("cons-status-msg", "children", allow_duplicate=True)],
     Input("btn-calculate", "n_clicks"),
     [State("time-start-comp", "value"),
      State("time-stop-comp", "value"),
      State({'type': 'exclude-start', 'index': ALL}, 'value'),
      State({'type': 'exclude-end', 'index': ALL}, 'value'),
      State("selected-tags-store", "data"),
-     State("cons-selected-path", "data")],
+     State("cons-selected-path", "data"),
+     State("cons-config-store", "data")], # Metadata needed for SID mapping
     prevent_initial_call=True
 )
-def run_calculations(n, start_comp, stop_comp, ex_starts, ex_ends, selected_tags, file_path):
-    if not file_path:
-        return dbc.Alert("⚠️ Carica prima un file binario!", color="danger")
-    if not selected_tags:
-        return dbc.Alert("⚠️ Seleziona almeno un tag!", color="warning")
+def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, file_path, config_meta):
+    if not file_path or not selected_tags or not config_meta:
+        return no_update, no_update, dbc.Alert("⚠️ Carica file e seleziona i tag.", color="warning")
 
-    # 1. Check Main Compressor Times
-    if start_comp >= stop_comp:
-        return dbc.Alert(
-            f"❌ Errore Orario: L'inizio ({start_comp}) deve essere precedente alla fine ({stop_comp}).", 
-            color="danger"
-        )
-
-    # 2. Check Dynamic Exclusions
-    # We zip them together to check each pair: (start1, end1), (start2, end2)...
-    for i, (ex_start, ex_end) in enumerate(zip(ex_starts, ex_ends)):
-        # Check if start < end within the same exclusion
-        if ex_start >= ex_end:
-            return dbc.Alert(
-                f"❌ Errore Esclusione {i+1}: L'orario di inizio ({ex_start}) deve essere precedente alla fine ({ex_end}).",
-                color="danger"
-            )
-        
-        # Optional: Check if the exclusion falls within the compressor operating window
-        if ex_start < start_comp or ex_end > stop_comp:
-            return dbc.Alert(
-                f"⚠️ Nota: L'esclusione {i+1} ({ex_start}-{ex_end}) è parzialmente fuori dall'orario compressore ({start_comp}-{stop_comp}).",
-                color="warning"
-            )
-
-    # 3. Check for Overlapping Exclusions (Increasing Order)
-    # This ensures Excl 1 is before Excl 2, etc.
-    for i in range(len(ex_starts) - 1):
-        if ex_ends[i] > ex_starts[i+1]:
-            return dbc.Alert(
-                f"❌ Errore Sequenza: L'esclusione {i+1} finisce dopo l'inizio dell'esclusione {i+2}. Mantieni l'ordine cronologico.",
-                color="danger"
-            )
-
-    # --- Proceed to Math if all checks pass ---
     try:
-        # result = perform_math(file_path, selected_tags, start_comp, stop_comp, zip(ex_starts, ex_ends))
-        return dbc.Alert("✅ Orari validi. Calcolo in corso...", color="success")
+        # A. Load data using mapping
+        raw_df = load_and_process_binary(file_path, selected_tags, config_meta)
+        
+        # B. Get tag metadata (Algorithms)
+        tag_info_df = dfCons[dfCons['Tag'].isin(selected_tags)]
+        
+        # C. Create Cumulative Dataframe (calcDf)
+        calcDf = calculate_cumulative_data(raw_df, tag_info_df)
+
+        # D. Slicing Math
+        file_date = raw_df.index[0].date()
+        t_start = datetime.combine(file_date, datetime.strptime(start_t, "%H:%M").time())
+        t_stop = datetime.combine(file_date, datetime.strptime(stop_t, "%H:%M").time())
+
+        results = []
+        for tag in selected_tags:
+            # Get values at start/stop using 'asof' for safety
+            v_start = calcDf[tag].asof(t_start)
+            v_stop = calcDf[tag].asof(t_stop)
+            gross = v_stop - v_start
+            
+            # Calculate exclusions
+            total_excl = 0
+            for s, e in zip(ex_starts, ex_ends):
+                ts_s = datetime.combine(file_date, datetime.strptime(s, "%H:%M").time())
+                ts_e = datetime.combine(file_date, datetime.strptime(e, "%H:%M").time())
+                total_excl += (calcDf[tag].asof(ts_e) - calcDf[tag].asof(ts_s))
+            
+            # Get conversion factor from dfCons
+            conv = tag_info_df[tag_info_df['Tag'] == tag]['ConversionFactor'].values[0]
+            final_val = round((gross - total_excl) * conv, 3)
+            
+            results.append({
+                "Tag": tag,
+                "Description": tag_info_df[tag_info_df['Tag'] == tag]['Description'].values[0],
+                "Value": final_val,
+                "MeasurementUnit": tag_info_df[tag_info_df['Tag'] == tag]['MeasurementUnit'].values[0]
+            })
+
+        return {"display": "block"}, results, dbc.Alert("✅ Calcolo terminato.", color="success")
+
     except Exception as e:
-        return dbc.Alert(f"Errore: {str(e)}", color="danger")
+        return no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger")
+
+
+#region functions
+def load_and_process_binary(file_path, selected_tags, config_metadata):
+    analog_channels = config_metadata.get('analog_channels', [])
+    tag_to_sid = {ch['tag']: ch['sid'] for ch in analog_channels if ch['tag'] in selected_tags}
+    target_sids = list(tag_to_sid.values())
+
+    if not target_sids:
+        raise ValueError("Nessun SID corrispondente trovato per i tag selezionati.")
+
+    raw_df = dp.read_wbin_data(file_path, target_sids, config_metadata)
+    
+    sid_to_tag = {v: k for k, v in tag_to_sid.items()}
+    raw_df.rename(columns=sid_to_tag, inplace=True)
+    return raw_df
+
+def format_file_size(size_bytes: int) -> str:
+    for unit in ['B', 'KB', 'MB', 'GB']:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.1f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.1f} TB"
+
+def list_bin_files(folder_path: str) -> list:
+    files = []
+    if not os.path.exists(folder_path):
+        return files
+    for f in os.listdir(folder_path):
+        if f.lower().endswith('.bin'):
+            full = os.path.join(folder_path, f)
+            try:
+                stat = os.stat(full)
+                mtime = datetime.fromtimestamp(stat.st_mtime)
+                files.append({
+                    'label': f"{f}  |  {mtime.strftime('%Y-%m-%d %H:%M')}  |  {format_file_size(stat.st_size)}",
+                    'value': full,
+                })
+            except:
+                files.append({'label': f, 'value': full})
+    files.sort(key=lambda x: x['value'])
+    return files
+
+def calculate_cumulative_data(raw_df, selected_tags_info):
+    """
+    raw_df: Index is Datetime, columns are Tags.
+    selected_tags_info: Dataframe/List containing 'Tag' and 'Algorithm'.
+    """
+    calcDf = pd.DataFrame(index=raw_df.index)
+    
+    # Calculate time delta in hours for Alg 1 integration
+    # (Assuming indices are sorted datetimes)
+    time_deltas = raw_df.index.to_series().diff().dt.total_seconds() / 3600.0
+    time_deltas = time_deltas.fillna(0)
+
+    for _, row in selected_tags_info.iterrows():
+        tag = row['Tag']
+        alg = row['Algorithm']
+        
+        if tag not in raw_df.columns:
+            continue
+            
+        if alg == 1:
+            # INSTANTANEOUS -> CUMULATIVE
+            # Integration: Sum(Value * Delta_t)
+            instant_values = raw_df[tag]
+            incremental_cons = instant_values * time_deltas
+            calcDf[tag] = incremental_cons.cumsum()
+        else:
+            # ALREADY CUMULATIVE
+            calcDf[tag] = raw_df[tag]
+    print(calcDf.head())
+    return calcDf

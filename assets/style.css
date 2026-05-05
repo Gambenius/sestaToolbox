@@ -1,3 +1,5 @@
+/* --------- BINARY REVIEW ----------------*/
+
 /* Espande la larghezza del menu a comparsa oltre i limiti del box */
 #wbin-tag-dropdown .Select-menu-outer {
     min-width: 1600px !important;
@@ -105,4 +107,12 @@ div[class*="daq-colorpicker--container"] > div {
 .selected-row {
     font-weight: bold !important;
     color: black;
+}
+
+
+/* --------------- CONSUMI --------------- */
+
+.cons-checklist .form-check {
+    margin-bottom: 2px;
+    font-size: 0.85rem;
 }
