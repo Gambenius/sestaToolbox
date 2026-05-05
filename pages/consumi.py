@@ -80,6 +80,7 @@ layout = html.Div([
             dbc.Button("✅ Carica File", id="cons-btn-load-file", color="primary", disabled=True)
         ]),
     ], id="cons-file-modal", is_open=False),
+    html.Div(id="clamp-warning"), # clamping warning for negative measurements set to 0
     # RESULTS PREVIEW
     html.Div(id="cons-results-container", children=[
         html.Div([
@@ -93,7 +94,7 @@ layout = html.Div([
                 columnDefs=[
                     {"field": "Tag", "headerName": "TAG", "checkboxSelection": False},
                     {"field": "Description", "headerName": "DESCRIZIONE", "flex": 2},
-                    {"field": "Value", "headerName": "VALUE", "valueFormatter": 'params.value ? params.value : ""'},
+                    {"field": "Value", "headerName": "VALUE", "valueFormatter": 'params.value != null ? params.value : ""'},
                     {"field": "MeasurementUnit", "headerName": "UNIT", "width": 100},
                 ],
                 rowData=[],
@@ -124,6 +125,17 @@ layout = html.Div([
 
     # The groups will be injected here as a dbc.Row with 2 Cols
     html.Div(id="groups-container"),
+
+    # animation modal when loading
+    dbc.Modal([
+        dbc.ModalBody([
+            html.Div([
+                html.Img(src="https://media.giphy.com/media/JIX9t2j0ZTN9S/giphy.gif", 
+                        style={"width": "200px", "borderRadius": "12px"}),
+                html.P("Calcolo in corso...", className="mt-3 fw-bold text-primary")
+            ], className="text-center py-3")
+        ])
+    ], id="loading-modal", is_open=False, centered=True, backdrop="static", keyboard=False),
 ], className="p-4 bg-white", style={"minHeight": "100vh"})
 
 #region CALLBACKS
@@ -135,6 +147,7 @@ layout = html.Div([
     Input("groups-container", "id") 
 )
 def render_groups(_):
+    print("callback render groups")
     col_left = []
     col_right = []
     
@@ -204,6 +217,7 @@ def render_groups(_):
     prevent_initial_call=True
 )
 def handle_modal_and_files(n_open, n_close, n_load, selected_date, is_open):
+    print("callback handle modal and files")
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id']
 
@@ -238,6 +252,7 @@ def handle_modal_and_files(n_open, n_close, n_load, selected_date, is_open):
     prevent_initial_call=True
 )
 def cb_select_file(selected_path):
+    print("callback cb select file")
     return (selected_path is None), selected_path
 
 # 4. Load Metadata (The Logic you requested)
@@ -250,6 +265,7 @@ def cb_select_file(selected_path):
     prevent_initial_call=True
 )
 def cb_load_file(n_clicks, selected_path):
+    print("cb load file")
     if not selected_path or not os.path.exists(selected_path):
         return no_update, no_update, dbc.Alert("File non trovato.", color="danger")
     
@@ -273,6 +289,8 @@ def cb_load_file(n_clicks, selected_path):
     prevent_initial_call=True
 )
 def cb_master_toggle(master_checked):
+    print("cb msater toggle")
+
     ctx = dash.callback_context
     return [master_checked] * len(ctx.outputs_list)
 
@@ -283,6 +301,8 @@ def cb_master_toggle(master_checked):
     prevent_initial_call=True
 )
 def toggle_group_selection(is_checked, options):
+    print("callback toggle group selection")
+
     return [opt['value'] for opt in options] if is_checked else []
 
 @callback(
@@ -291,6 +311,7 @@ def toggle_group_selection(is_checked, options):
     prevent_initial_call=True
 )
 def update_dataframe_selection(all_values):
+    print("callback update dataframe selection")
     selected_tags = [tag for sublist in all_values for tag in sublist]
     global dfCons
     dfCons['Selected'] = dfCons['Tag'].isin(selected_tags)
@@ -305,6 +326,7 @@ def update_dataframe_selection(all_values):
     prevent_initial_call=True
 )
 def manage_exclusions(add_n, rem_n, current_children):
+    print("callback manage exclusions")
     ctx = dash.callback_context
     trigger = ctx.triggered[0]['prop_id']
 
@@ -330,62 +352,31 @@ def manage_exclusions(add_n, rem_n, current_children):
 
     return no_update
 
-# @callback(
-#     [Output("cons-results-inner", "style"),
-#      Output("cons-results-grid", "rowData"),
-#      Output("cons-status-msg", "children", allow_duplicate=True)],
-#     Input("btn-calculate", "n_clicks"),
-#     [State("time-start-comp", "value"),
-#      State("time-stop-comp", "value"),
-#      State({'type': 'exclude-start', 'index': ALL}, 'value'),
-#      State({'type': 'exclude-end', 'index': ALL}, 'value'),
-#      State("selected-tags-store", "data"),
-#      State("cons-selected-path", "data")],
-#     prevent_initial_call=True
-# )
-# def run_calculations(n, start_comp, stop_comp, ex_starts, ex_ends, selected_tags, file_path):
-#     if not file_path:
-#         return no_update, no_update, dbc.Alert("⚠️ Carica prima un file binario!", color="danger")
-#     if not selected_tags:
-#         return no_update, no_update, dbc.Alert("⚠️ Seleziona almeno un tag!", color="warning")
-
-#     # --- Time Validations (from previous step) ---
-#     if start_comp >= stop_comp:
-#         return no_update, no_update, dbc.Alert("❌ Errore Orario Compressore", color="danger")
-    
-#     # Check for increasing order in exclusions
-#     for i in range(len(ex_starts) - 1):
-#         if ex_ends[i] > ex_starts[i+1]:
-#             return no_update, no_update, dbc.Alert(f"❌ Errore Sequenza Esclusioni", color="danger")
-
-#     # --- Prepare AG Grid Data ---
-#     # Filter the main dataframe for the selected tags
-#     results_df = dfCons[dfCons['Tag'].isin(selected_tags)].copy()
-    
-#     # Initialize the "Value" column as empty for now
-#     results_df['Value'] = "" 
-    
-#     # Convert to dictionary for AG Grid
-#     grid_data = results_df.to_dict('records')
-
-#     # Show the grid container and update data
-#     return {"display": "block"}, grid_data, dbc.Alert("✅ Calcolo completato. Risultati pronti.", color="success")
-
-
 @callback(
     Output("cons-results-grid", "exportDataAsCsv"),
     Input("btn-export-csv", "n_clicks"),
     prevent_initial_call=True
 )
 def export_results_csv(n):
+    print("callback export results csv")
     if n:
         return True
     return False
 
 @callback(
-    [Output("cons-results-inner", "style"),
+    Output("loading-modal", "is_open", allow_duplicate=True),
+    Input("btn-calculate", "n_clicks"),
+    prevent_initial_call=True
+)
+def open_loading_modal(n):
+    return True if n else False
+
+@callback(
+    [Output("loading-modal", "is_open"),  
+     Output("cons-results-inner", "style"),
      Output("cons-results-grid", "rowData"),
-     Output("cons-status-msg", "children", allow_duplicate=True)],
+     Output("cons-status-msg", "children", allow_duplicate=True),
+     Output("clamp-warning", "children")],
     Input("btn-calculate", "n_clicks"),
     [State("time-start-comp", "value"),
      State("time-stop-comp", "value"),
@@ -397,12 +388,20 @@ def export_results_csv(n):
     prevent_initial_call=True
 )
 def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, file_path, config_meta):
-    if not file_path or not selected_tags or not config_meta:
-        return no_update, no_update, dbc.Alert("⚠️ Carica file e seleziona i tag.", color="warning")
-
+    print("callback cb calculate consuim")
+    if not file_path:
+        return False, no_update, no_update, dbc.Alert("⚠️ Seleziona un binario prima!", color="danger"), no_update
+    if not selected_tags:
+        return False, no_update, no_update, dbc.Alert("⚠️ Seleziona almeno una tag!", color="danger"), no_update
+    # Check for overlapping exclusions
+    for i in range(len(ex_starts)):
+        for j in range(i+1, len(ex_starts)):
+            if ex_starts[i] < ex_ends[j] and ex_starts[j] < ex_ends[i]:
+                return False, no_update, no_update, dbc.Alert("❌ Esclusioni sovrapposte!", color="danger"), no_update
     try:
         # A. Load data using mapping
-        raw_df = load_and_process_binary(file_path, selected_tags, config_meta)
+        raw_df, n_clamped = load_and_process_binary(file_path, selected_tags, config_meta)
+        clamp_warn = dbc.Alert(f"⚠️ {n_clamped} valori negativi azzerati.", color="warning") if n_clamped > 0 else ""
         
         # B. Get tag metadata (Algorithms)
         tag_info_df = dfCons[dfCons['Tag'].isin(selected_tags)]
@@ -414,23 +413,30 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
         file_date = raw_df.index[0].date()
         t_start = datetime.combine(file_date, datetime.strptime(start_t, "%H:%M").time())
         t_stop = datetime.combine(file_date, datetime.strptime(stop_t, "%H:%M").time())
-
+        t_start = max(t_start, calcDf.index[0])
+        print(t_start)
+        print(t_stop)
         results = []
         for tag in selected_tags:
             # Get values at start/stop using 'asof' for safety
             v_start = calcDf[tag].asof(t_start)
             v_stop = calcDf[tag].asof(t_stop)
             gross = v_stop - v_start
-            
+            print(f"t_start: {t_start}")
+            print(f"t_stop: {t_stop}")
+            print(f"v_start: {calcDf['F034MIS2'].asof(t_start)}")
+            print(f"v_stop: {calcDf['F034MIS2'].asof(t_stop)}")
+            print(f"gross: {v_stop - v_start}")
             # Calculate exclusions
             total_excl = 0
             for s, e in zip(ex_starts, ex_ends):
                 ts_s = datetime.combine(file_date, datetime.strptime(s, "%H:%M").time())
                 ts_e = datetime.combine(file_date, datetime.strptime(e, "%H:%M").time())
                 total_excl += (calcDf[tag].asof(ts_e) - calcDf[tag].asof(ts_s))
-            
+
             # Get conversion factor from dfCons
             conv = tag_info_df[tag_info_df['Tag'] == tag]['ConversionFactor'].values[0]
+            conv = 1 if pd.isna(conv) else conv
             final_val = round((gross - total_excl) * conv, 3)
             
             results.append({
@@ -440,28 +446,46 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
                 "MeasurementUnit": tag_info_df[tag_info_df['Tag'] == tag]['MeasurementUnit'].values[0]
             })
 
-        return {"display": "block"}, results, dbc.Alert("✅ Calcolo terminato.", color="success")
-
+        return False, {"display": "block"}, results, dbc.Alert("✅ Calcolo terminato.", color="success"), clamp_warn
     except Exception as e:
-        return no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger")
+        return False, no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger"), no_update
 
-
+@callback(
+    Output("cons-btn-open-modal", "disabled"),
+    Output("cons-btn-open-modal", "title"),
+    Input("selected-tags-store", "data")
+)
+def toggle_modal_btn(selected_tags):
+    if not selected_tags:
+        return True, "Seleziona almeno una tag"
+    return False, ""
 #region functions
 def load_and_process_binary(file_path, selected_tags, config_metadata):
+    print("loda and process binary (to get raw df)")
     analog_channels = config_metadata.get('analog_channels', [])
     tag_to_sid = {ch['tag']: ch['sid'] for ch in analog_channels if ch['tag'] in selected_tags}
     target_sids = list(tag_to_sid.values())
+    # print(analog_channels)
+    # print(tag_to_sid)
+    # print(target_sids)
+
 
     if not target_sids:
         raise ValueError("Nessun SID corrispondente trovato per i tag selezionati.")
 
     raw_df = dp.read_wbin_data(file_path, target_sids, config_metadata)
-    
+    n_clamped = (raw_df < 0).sum().sum()
+    raw_df = raw_df.clip(lower=0) #clamping stuff that's less than 0 to avoid deducting costs
+    # print(raw_df.head())
+    # import plotly.express as px
+    # px.line(raw_df, title="DEBUG: raw_df").write_html(r"C:/Users/EdoardoG/Desktop/debug_raw_df.html")
     sid_to_tag = {v: k for k, v in tag_to_sid.items()}
     raw_df.rename(columns=sid_to_tag, inplace=True)
-    return raw_df
+    return raw_df, n_clamped
 
 def format_file_size(size_bytes: int) -> str:
+    print("format_file_size")
+
     for unit in ['B', 'KB', 'MB', 'GB']:
         if size_bytes < 1024.0:
             return f"{size_bytes:.1f} {unit}"
@@ -469,6 +493,7 @@ def format_file_size(size_bytes: int) -> str:
     return f"{size_bytes:.1f} TB"
 
 def list_bin_files(folder_path: str) -> list:
+    print("list_bin_files")
     files = []
     if not os.path.exists(folder_path):
         return files
@@ -488,6 +513,7 @@ def list_bin_files(folder_path: str) -> list:
     return files
 
 def calculate_cumulative_data(raw_df, selected_tags_info):
+    print("calc cum data")
     """
     raw_df: Index is Datetime, columns are Tags.
     selected_tags_info: Dataframe/List containing 'Tag' and 'Algorithm'.
@@ -496,7 +522,7 @@ def calculate_cumulative_data(raw_df, selected_tags_info):
     
     # Calculate time delta in hours for Alg 1 integration
     # (Assuming indices are sorted datetimes)
-    time_deltas = raw_df.index.to_series().diff().dt.total_seconds() / 3600.0
+    time_deltas = raw_df.index.to_series().diff().dt.total_seconds() #removed 3600 for seconds
     time_deltas = time_deltas.fillna(0)
 
     for _, row in selected_tags_info.iterrows():
@@ -515,5 +541,11 @@ def calculate_cumulative_data(raw_df, selected_tags_info):
         else:
             # ALREADY CUMULATIVE
             calcDf[tag] = raw_df[tag]
+    print("raw df \n")
+    print(raw_df.head())
+    print("cumsum df \n")
     print(calcDf.head())
+    
+    import plotly.express as px
+    px.line(calcDf, title="DEBUG: calcDf").write_html(r"C:/Users/EdoardoG/Desktop/debug_cums_df.html")
     return calcDf

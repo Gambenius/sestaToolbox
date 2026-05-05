@@ -1,4 +1,9 @@
 import re, os
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+import struct
+
 def get_wbin_metadata(path):
     MARKER = b'[END]'
     MARKER_DIG = '[DIGITAL]'
@@ -44,6 +49,7 @@ def get_wbin_metadata(path):
             tag = cols[hdr_map.get('Tag', 0)].upper()
             if tag:
                 analog_channels.append({
+                    'sid': len(analog_channels),
                     'tag': tag,
                     'unit': cols[hdr_map.get('EU', 1)] if 'EU' in hdr_map else "",
                     'desc': cols[hdr_map.get('Comment', 2)] if 'Comment' in hdr_map else ""
@@ -129,3 +135,33 @@ def get_wbin_metadata(path):
         'start_time': t_start,
         'end_time': t_end,
     }
+
+def read_wbin_data(path, sids, config):
+    offset = config['data_offset']
+    block_size = config['block_size']
+    total_blocks = config['total_blocks']
+
+    with open(path, 'rb') as f:
+        f.seek(offset)
+        blob = f.read(total_blocks * block_size)
+
+    timestamps = []
+    data = {sid: [] for sid in sids}
+
+    # Parse header time from first block
+    first = blob[0:block_size]
+    h0, m0, s0 = first[4], first[5], first[6]
+    today = datetime.now().date()
+    start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+
+    for i in range(total_blocks):
+        record = blob[i*block_size:(i+1)*block_size]
+        if len(record) < block_size:
+            break
+        timestamps.append(start_dt + timedelta(seconds=i))
+        for sid in sids:
+            val = struct.unpack('>f', record[13+(sid*4):13+(sid*4)+4])[0]
+            data[sid].append(val if abs(val) < 1e15 else 0.0)
+
+    return pd.DataFrame(data, index=timestamps)
+
