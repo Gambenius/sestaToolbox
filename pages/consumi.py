@@ -91,7 +91,7 @@ layout = html.Div([
             dbc.Row([
                 dbc.Col(html.H5("Risultati Calcolo Consumi", className="text-success"), width=True),
                 dbc.Col(dbc.Button("📥 Scarica CSV", id="btn-export-csv", color="outline-success", size="sm"), width="auto"),
-            ], align="center", className="mb-2"),
+            ], align="center", className="mb-2 mt-2"),
             
             dag.AgGrid(
                 id="cons-results-grid",
@@ -425,21 +425,24 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
             if ex_starts[i] < ex_ends[j] and ex_starts[j] < ex_ends[i]:
                 return False, no_update, no_update, dbc.Alert("❌ Esclusioni sovrapposte!", color="danger"), no_update
     try:
-        # A. Load data using mapping
-        raw_df, n_clamped = load_and_process_binary(file_path, selected_tags, config_meta)
-        clamp_warn = dbc.Alert(f"⚠️ {n_clamped} valori negativi azzerati.", color="warning") if n_clamped > 0 else ""
-        
-        # B. Get tag metadata (Algorithms)
-        tag_info_df = dfCons[dfCons['Tag'].isin(selected_tags)]
-        
-        # C. Create Cumulative Dataframe (calcDf)
-        calcDf = calculate_cumulative_data(raw_df, tag_info_df)
-
-        # D. Slicing Math
-        file_date = raw_df.index[0].date()
+        # 1. Get the actual start time of the binary file first
+        file_start_dt = dp.get_file_start_time(file_path, config_meta)
+        file_date = file_start_dt.date()
+        # 2. Convert your UI strings to datetime objects using the file's date
         t_start = datetime.combine(file_date, datetime.strptime(start_t, "%H:%M").time())
         t_stop = datetime.combine(file_date, datetime.strptime(stop_t, "%H:%M").time())
-        t_start = max(t_start, calcDf.index[0])
+
+        # 3. Apply the 'max' logic: 
+        # Ensure we don't try to start BEFORE the file actually begins
+        t_start = max(t_start, file_start_dt)
+
+        # 4. Load the data using the calculated slice
+        raw_df, n_clamped = load_and_process_binary(file_path, selected_tags, config_meta, t_start, t_stop)
+        clamp_warn = dbc.Alert(f"⚠️ {n_clamped} valori negativi azzerati.", color="warning") if n_clamped > 0 else ""
+
+        # 5. Now create calcDf safely
+        tag_info_df = dfCons[dfCons['Tag'].isin(selected_tags)]
+        calcDf = calculate_cumulative_data(raw_df, tag_info_df)
         results = []
         for system in systems:
             results.append({
@@ -487,7 +490,7 @@ def toggle_modal_btn(selected_tags):
     return False, ""
 
 #region functions
-def load_and_process_binary(file_path, selected_tags, config_metadata):
+def load_and_process_binary(file_path, selected_tags, config_metadata, t_start=None, t_stop=None):
     analog_channels = config_metadata.get('analog_channels', [])
     tag_to_sid = {ch['tag']: ch['sid'] for ch in analog_channels if ch['tag'] in selected_tags}
     target_sids = list(tag_to_sid.values())
@@ -495,11 +498,22 @@ def load_and_process_binary(file_path, selected_tags, config_metadata):
     if not target_sids:
         raise ValueError("Nessun SID corrispondente trovato per i tag selezionati.")
 
-    raw_df = dp.read_wbin_data(file_path, target_sids, config_metadata)
+    # A. Read the data
+    raw_df = dp.read_wbin_data(file_path, target_sids, config_metadata, t_start, t_stop)
+    
+    if raw_df.empty:
+        return raw_df, 0
+
+    # B. Calculate n_clamped outside (values < 0)
     n_clamped = (raw_df < 0).sum().sum()
-    raw_df = raw_df.clip(lower=0) #clamping stuff that's less than 0 to avoid deducting costs
+    
+    # C. Apply the clamp
+    raw_df = raw_df.clip(lower=0) 
+    
+    # D. Final mapping
     sid_to_tag = {v: k for k, v in tag_to_sid.items()}
     raw_df.rename(columns=sid_to_tag, inplace=True)
+    
     return raw_df, n_clamped
 
 def format_file_size(size_bytes: int) -> str:

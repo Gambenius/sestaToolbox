@@ -136,32 +136,69 @@ def get_wbin_metadata(path):
         'end_time': t_end,
     }
 
-def read_wbin_data(path, sids, config):
+def read_wbin_data(path, sids, config, t_start=None, t_stop=None):
     offset = config['data_offset']
     block_size = config['block_size']
     total_blocks = config['total_blocks']
 
     with open(path, 'rb') as f:
         f.seek(offset)
-        blob = f.read(total_blocks * block_size)
+        first_block = f.read(block_size)
+        if not first_block:
+            return pd.DataFrame()
+
+        h0, m0, s0 = first_block[4], first_block[5], first_block[6]
+        today = datetime.now().date()
+        file_start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+
+        start_idx = 0
+        end_idx = total_blocks
+
+        if t_start:
+            diff = (t_start - file_start_dt).total_seconds()
+            start_idx = max(0, int(diff))
+        
+        if t_stop:
+            diff = (t_stop - file_start_dt).total_seconds()
+            end_idx = min(total_blocks, int(diff) + 1)
+
+        if start_idx >= end_idx:
+            return pd.DataFrame(columns=sids)
+
+        f.seek(offset + (start_idx * block_size))
+        blob = f.read((end_idx - start_idx) * block_size)
 
     timestamps = []
     data = {sid: [] for sid in sids}
+    actual_start_dt = file_start_dt + timedelta(seconds=start_idx)
 
-    # Parse header time from first block
-    first = blob[0:block_size]
-    h0, m0, s0 = first[4], first[5], first[6]
-    today = datetime.now().date()
-    start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
-
-    for i in range(total_blocks):
-        record = blob[i*block_size:(i+1)*block_size]
+    for i in range(end_idx - start_idx):
+        record = blob[i*block_size : (i+1)*block_size]
         if len(record) < block_size:
             break
-        timestamps.append(start_dt + timedelta(seconds=i))
+            
+        timestamps.append(actual_start_dt + timedelta(seconds=i))
         for sid in sids:
             val = struct.unpack('>f', record[13+(sid*4):13+(sid*4)+4])[0]
+            # Clean only the extreme overflow values here
             data[sid].append(val if abs(val) < 1e15 else 0.0)
 
     return pd.DataFrame(data, index=timestamps)
 
+def get_file_start_time(path, config):
+    """Quickly peeks at the first block to get the base datetime."""
+    offset = config['data_offset']
+    block_size = config['block_size']
+    
+    with open(path, 'rb') as f:
+        f.seek(offset)
+        first = f.read(block_size)
+        if not first:
+            return None
+        
+        # Extract H, M, S from the binary header
+        h0, m0, s0 = first[4], first[5], first[6]
+        # If the file name contains the date, it's better to parse it from 'path'.
+        # Otherwise, we use today's date as you did originally:
+        today = datetime.now().date() 
+        return datetime(today.year, today.month, today.day, h0, m0, s0)
