@@ -5,8 +5,8 @@ import pandas as pd
 import os
 from datetime import datetime
 from utils import data_processor as dp
-import dash_ag_grid as dag 
-
+import dash_ag_grid as dag
+import io
 
 #region CONFIG
 NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
@@ -26,9 +26,10 @@ layout = html.Div([
     dcc.Store(id='cons-selected-path', data=None),
     dcc.Store(id='cons-config-store', data=None),
     dcc.Store(id='selected-tags-store', data=[]),
+    dcc.Store(id='storage-info', storage_type='memory'),
+    dcc.Download(id="download-text"),
     html.H4("Gestione consumi complessivi", className="mb-4"),
-    
-    
+        
     # Status Message Area
     html.Div(id="cons-status-msg", className="mb-3"),
     # Add this inside your layout Div
@@ -91,6 +92,7 @@ layout = html.Div([
             dbc.Row([
                 dbc.Col(html.H5("Risultati Calcolo Consumi", className="text-success"), width=True),
                 dbc.Col(dbc.Button("📥 Scarica CSV", id="btn-export-csv", color="outline-success", size="sm"), width="auto"),
+                dbc.Button("Export Report (.txt)", id="btn-export-txt", color="primary"),
             ], align="center", className="mb-2 mt-2"),
             
             dag.AgGrid(
@@ -276,31 +278,67 @@ def handle_modal_and_files(n_open, n_close, n_load, selected_date, is_open):
 def cb_select_file(selected_path):
     return (selected_path is None), selected_path
 
-# 4. Load Metadata (The Logic you requested)
+# 4. Load Metadata
 @callback(
     [Output('cons-config-store', 'data'),
      Output('cons-file-info', 'children'),
-     Output("cons-status-msg", "children", allow_duplicate=True)],
+     Output("cons-status-msg", "children", allow_duplicate=True),
+     Output('storage-info', 'data')],
     Input('cons-btn-load-file', 'n_clicks'),    
     State('cons-selected-path', 'data'),
     prevent_initial_call=True
 )
 def cb_load_file(n_clicks, selected_path):
     if not selected_path or not os.path.exists(selected_path):
-        return no_update, no_update, dbc.Alert("File non trovato.", color="danger")
+        # We return no_update for stores but keep the Alert functional
+        return no_update, no_update, dbc.Alert("File non trovato.", color="danger", className="small"), no_update
     
     try:
         cfg = dp.get_wbin_metadata(selected_path)
+        meta = cfg.get('meta', {})
         
-        # Build your info_content card here based on cfg...
+        # Extract metadata and initialize TIME placeholders for the export logic
+        info_data = {
+            'campaign': meta.get('campaign', 'N/A'),
+            'customer': meta.get('customer', 'N/A'),
+            'coordinator': meta.get('coordinator', 'N/A'),
+            'filename': os.path.basename(selected_path),
+            'total_blocks': cfg.get('total_blocks', 0),
+            
+            # These will be filled by your time-calculation logic/inputs later
+            'comp_start': 'Not set',
+            'comp_stop': 'Not set',
+            'excl_log': 'None',       # e.g., "12:10:00 to 12:20:00"
+            'total_duration': '0 min',
+            'total_excluded': '0 min',
+            'effective_time': '0 min'
+        }
+
+        # UI Card display
         info_content = html.Div([
-            html.P(f"File: {os.path.basename(selected_path)}", className="small fw-bold"),
-            html.P(f"Blocks: {cfg.get('total_blocks', 'N/A')}", className="small")
+            html.Div([
+                html.B("File: "), html.Span(info_data['filename']),
+                html.Br(),
+                html.B("Campaign: "), html.Span(info_data['campaign']),
+                html.Br(),
+                html.B("Customer: "), html.Span(info_data['customer']),
+                html.Br(),
+                html.B("Coordinator: "), html.Span(info_data['coordinator']),
+            ], className="small mb-2"),
+            html.P(f"Blocks: {info_data['total_blocks']}", className="small text-muted mb-0")
         ])
 
-        return cfg, info_content, dbc.Alert(f"✓ {os.path.basename(selected_path)} caricato", color="success")
+        return (
+            cfg, 
+            info_content, 
+            dbc.Alert(f"✓ {info_data['filename']} caricato", color="success", className="small"),
+            info_data
+        )
+
     except Exception as e:
-        return no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger")
+        # Maintain the alert output even on failure
+        return no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger", className="small"), no_update
+
 
 # 5. Selection Sync Callbacks
 @callback(
@@ -480,14 +518,109 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
         return False, no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger"), no_update
 
 @callback(
+    # We update the storage so the Export function can see it later
+    Output('storage-info', 'data', allow_duplicate=True),
+    Input('btn-calculate', 'n_clicks'),
+    [State('storage-info', 'data'),
+     State('time-start-comp', 'value'),
+     State('time-stop-comp', 'value'),
+     State({'type': 'exclude-start', 'index': ALL}, 'value'),
+     State({'type': 'exclude-end', 'index': ALL}, 'value')],
+    prevent_initial_call=True
+)
+def sync_params_to_storage(n, current_info, start_val, stop_val, ex_starts, ex_ends):
+    if not n or current_info is None:
+        return no_update
+    
+    current_info['comp_start'] = start_val
+    current_info['comp_stop'] = stop_val
+    current_info['exclusions'] = [
+        {'start': s, 'stop': e} for s, e in zip(ex_starts, ex_ends)
+    ]
+    
+    return current_info
+
+@callback(
     Output("btn-calculate", "disabled"),
     Output("btn-calculate", "title"),
-    Input("selected-tags-store", "data")
+    Input("selected-tags-store", "data"),
+    prevent_initial_call=True
 )
 def toggle_modal_btn(selected_tags):
     if not selected_tags:
         return True, "Seleziona almeno una tag"
     return False, ""
+
+@callback(
+    Output("download-text", "data"),
+    Input("btn-export-txt", "n_clicks"),
+    State("cons-results-grid", "virtualRowData"),
+    State("storage-info", "data"),
+    prevent_initial_call=True
+)
+def export_formatted_text(n, grid_data, info):
+    if not n or not grid_data:
+        return None
+
+    df = pd.DataFrame(grid_data)
+    info = info or {}
+    output = io.StringIO()
+    
+    # --- HEADER ---
+    output.write("--- Info ---\n")
+    output.write(f"Campagna:   {info.get('campaign', 'N/A')}\n")
+    output.write(f"Cliente:   {info.get('customer', 'N/A')}\n")
+    output.write("-" * 30 + "\n\n")
+    
+    # --- TIME LOG ---
+    output.write("TIME LOG:\n")
+    output.write(f"  [Accensione COMP]  {info.get('comp_start', '--:--:--')}\n")
+    
+    # Loop through exclusions stored in the list
+    exclusions_list = info.get('exclusions', [])
+    if exclusions_list:
+        for i, slot in enumerate(exclusions_list, 1):
+            s = slot.get('start', 'N/A')
+            e = slot.get('stop', 'N/A')
+            output.write(f"  [EXCL{i}]  {s} to {e}\n")
+    else:
+        output.write("  [EXCL ]  None\n")
+        
+    output.write(f"  [Spegnimento COMP ]  {info.get('comp_stop', '--:--:--')}\n")
+    output.write("\n\n")
+    
+    # --- TABLE DATA ---
+    # Widths: Tag(35), Desc(60), Val(15), Unit(15)
+    w_tag, w_desc, w_val, w_unit = 35, 60, 15, 15
+    
+    header = (
+        "TAG".ljust(w_tag) + 
+        "DESCRIZIONE".ljust(w_desc) + 
+        "VALUE".ljust(w_val) + 
+        "UNIT".ljust(w_unit) + "\n"
+    )
+    output.write(header)
+    output.write("-" * (w_tag + w_desc + w_val + w_unit) + "\n")
+    
+    for _, row in df.iterrows():
+        val = row.get('Value')
+        # Format numbers to 3 decimals, otherwise use raw string
+        val_str = f"{val:.3f}" if isinstance(val, (int, float)) else str(val or "")
+        
+        line = (
+            str(row.get('Tag', '')).ljust(w_tag) +
+            str(row.get('Description', '')).ljust(w_desc) +
+            val_str.ljust(w_val) +
+            str(row.get('MeasurementUnit', '')).ljust(w_unit) + "\n"
+        )
+        output.write(line)
+    
+    content = output.getvalue()
+    output.close()
+    
+    filename = f"Report_{info.get('campaign', 'Export')}.txt".replace(" ", "_")
+    return dcc.send_string(content, filename)
+
 
 #region functions
 def load_and_process_binary(file_path, selected_tags, config_metadata, t_start=None, t_stop=None):
@@ -572,3 +705,18 @@ def calculate_cumulative_data(raw_df, selected_tags_info):
             # ALREADY CUMULATIVE
             calcDf[tag] = raw_df[tag]
     return calcDf
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
