@@ -658,8 +658,8 @@ def update_zoom_limits(relayout_data, cfg):
 
 
 def save_preset_to_file(title, tags):
-    """Salva i tag nel formato richiesto."""
     with open(PRESETS_FILE, "a") as f:
+        f.write(f"\n")
         f.write(f"{title.upper()}\n{{\n")
         for tag in tags:
             f.write(f"{tag}\n")

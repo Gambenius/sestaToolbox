@@ -13,14 +13,10 @@ Tool for effortlessly loading and analysing historical data.
 - Hover values  
 - CSV export  
 
-### 2. Chemical Analysis *(WIP)*
-Early-stage tool for rapid visualisation of chemical analysis data.
+### 2. Consumption Calculator
+Allows for calculation and export of consumption data for budgeting
 
-- Error plotting for Lambda  
-- Ostwald triangle visualisation  
-- Additional analysis tools in development  
-
-### 3. Quicktrends *(Planned)*
+### 3. Quicktrends *(WIP)*
 Future feature focused on real-time monitoring.
 
 - OPC server integration  
