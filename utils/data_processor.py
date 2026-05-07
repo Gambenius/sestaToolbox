@@ -4,6 +4,24 @@ import pandas as pd
 from datetime import datetime, timedelta
 import struct
 
+def _extract_date_from_path(file_path):
+    """
+    Extract the date from the folder name in the file path.
+    Expected folder naming convention: YYYYMMDD (e.g., '20260507').
+    Falls back to today's date if no valid date folder is found.
+    """
+    try:
+        parts = os.path.normpath(file_path).split(os.sep)
+        for part in parts:
+            if len(part) == 8 and part.isdigit():
+                candidate = datetime.strptime(part, "%Y%m%d").date()
+                # Sanity check: year should be reasonable
+                if 2000 <= candidate.year <= 2100:
+                    return candidate
+    except (ValueError, IndexError):
+        pass
+    return datetime.now().date()
+
 def get_wbin_metadata(path):
     MARKER = b'[END]'
     MARKER_DIG = '[DIGITAL]'
@@ -137,9 +155,16 @@ def get_wbin_metadata(path):
     }
 
 def read_wbin_data(path, sids, config, t_start=None, t_stop=None):
+    """
+    Read binary data, extracting the ACTUAL timestamp from each block.
+    Handles duplicate timestamps, skipped seconds, and midnight crossovers.
+    """
     offset = config['data_offset']
     block_size = config['block_size']
     total_blocks = config['total_blocks']
+
+    # Use the date from the folder name, not "today"
+    base_date = _extract_date_from_path(path)
 
     with open(path, 'rb') as f:
         f.seek(offset)
@@ -147,58 +172,61 @@ def read_wbin_data(path, sids, config, t_start=None, t_stop=None):
         if not first_block:
             return pd.DataFrame()
 
-        h0, m0, s0 = first_block[4], first_block[5], first_block[6]
-        today = datetime.now().date()
-        file_start_dt = datetime(today.year, today.month, today.day, h0, m0, s0)
+        # Read ALL blocks from the file (necessary to handle midnight crossovers correctly).
+        # For large files this can be optimized later with a two-pass approach.
+        f.seek(offset)
+        all_blob = f.read(total_blocks * block_size)
 
-        start_idx = 0
-        end_idx = total_blocks
-
-        if t_start:
-            diff = (t_start - file_start_dt).total_seconds()
-            start_idx = max(0, int(diff))
-        
-        if t_stop:
-            diff = (t_stop - file_start_dt).total_seconds()
-            end_idx = min(total_blocks, int(diff) + 1)
-
-        if start_idx >= end_idx:
-            return pd.DataFrame(columns=sids)
-
-        f.seek(offset + (start_idx * block_size))
-        blob = f.read((end_idx - start_idx) * block_size)
-
+    # --- Parse each block, reading actual timestamps ---
     timestamps = []
     data = {sid: [] for sid in sids}
-    actual_start_dt = file_start_dt + timedelta(seconds=start_idx)
+    current_date = base_date
 
-    for i in range(end_idx - start_idx):
-        record = blob[i*block_size : (i+1)*block_size]
+    for i in range(total_blocks):
+        record = all_blob[i * block_size : (i + 1) * block_size]
         if len(record) < block_size:
             break
-            
-        timestamps.append(actual_start_dt + timedelta(seconds=i))
+
+        # Read actual H:M:S from this block
+        h, m, s = record[4], record[5], record[6]
+        current_dt = datetime(current_date.year, current_date.month, current_date.day, h, m, s)
+
+        # Detect midnight crossover: if the time goes backward (e.g., 23:59 -> 00:01),
+        # advance the date by one day.
+        if i > 0 and current_dt < timestamps[-1]:
+            current_date = current_date + timedelta(days=1)
+            current_dt = datetime(current_date.year, current_date.month, current_date.day, h, m, s)
+
+        # Apply t_start / t_stop filtering
+        if t_start and current_dt < t_start:
+            continue
+        if t_stop and current_dt > t_stop:
+            continue
+
+        timestamps.append(current_dt)
         for sid in sids:
-            val = struct.unpack('>f', record[13+(sid*4):13+(sid*4)+4])[0]
-            # Clean only the extreme overflow values here
+            val = struct.unpack('>f', record[13 + (sid * 4):13 + (sid * 4) + 4])[0]
             data[sid].append(val if abs(val) < 1e15 else 0.0)
 
+    if not timestamps:
+        return pd.DataFrame(columns=sids)
+
     return pd.DataFrame(data, index=timestamps)
+
 
 def get_file_start_time(path, config):
     """Quickly peeks at the first block to get the base datetime."""
     offset = config['data_offset']
     block_size = config['block_size']
-    
+
     with open(path, 'rb') as f:
         f.seek(offset)
         first = f.read(block_size)
         if not first:
             return None
-        
+
         # Extract H, M, S from the binary header
         h0, m0, s0 = first[4], first[5], first[6]
-        # If the file name contains the date, it's better to parse it from 'path'.
-        # Otherwise, we use today's date as you did originally:
-        today = datetime.now().date() 
-        return datetime(today.year, today.month, today.day, h0, m0, s0)
+        # Use the folder name to extract the correct date
+        base_date = _extract_date_from_path(path)
+        return datetime(base_date.year, base_date.month, base_date.day, h0, m0, s0)

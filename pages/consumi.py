@@ -23,7 +23,7 @@ dfCons['Selected'] = False
 layout = html.Div([
     
     # Stores
-    dcc.Store(id='cons-selected-path', data=None),
+    dcc.Store(id='cons-selected-paths', data=[]),
     dcc.Store(id='cons-config-store', data=None),
     dcc.Store(id='selected-tags-store', data=[]),
     dcc.Store(id='storage-info', storage_type='memory'),
@@ -76,7 +76,7 @@ layout = html.Div([
             ),
             html.Div(id="cons-file-info-modal", className="mb-2"), 
             html.Label("File .bin disponibili:", className="fw-bold mb-2"),
-            dcc.Dropdown(id="cons-file-dropdown", placeholder="Seleziona un file..."),
+            dcc.Dropdown(id="cons-file-dropdown", placeholder="Seleziona uno o più file...", multi=True),
             # Placeholder for metadata card inside modal or outside
             html.Div(id="cons-file-info", className="mt-3") 
         ]),
@@ -85,14 +85,14 @@ layout = html.Div([
             dbc.Button("✅ Carica File", id="cons-btn-load-file", color="primary", disabled=True)
         ]),
     ], id="cons-file-modal", is_open=False),
-    html.Div(id="clamp-warning"), # clamping warning for negative measurements set to 0
+    html.Div(id="clamp-warning", className="mb-3 mt-3"), # clamping warning for negative measurements set to 0
     # RESULTS PREVIEW
     html.Div(id="cons-results-container", children=[
         html.Div([
             dbc.Row([
                 dbc.Col(html.H5("Risultati Calcolo Consumi", className="text-success"), width=True),
                 dbc.Col(dbc.Button("📥 Scarica CSV", id="btn-export-csv", color="outline-success", size="sm"), width="auto"),
-                dbc.Button("Export Report (.txt)", id="btn-export-txt", color="primary"),
+                dbc.Col(dbc.Button("📥 Scarica TXT", id="btn-export-txt", color="outline-success", size="sm"), width="auto"),
             ], align="center", className="mb-2 mt-2"),
             
             dag.AgGrid(
@@ -265,18 +265,20 @@ def handle_modal_and_files(n_open, n_close, n_load, selected_date, is_open):
     if not files:
         return is_open, [], None, html.Div("Nessun file trovato.", className="text-danger small")
 
-    auto_select = files[0]['value'] if len(files) == 1 else None
-    return is_open, files, auto_select, html.Div(f"{len(files)} file trovati", className="text-success small")
+    # With multi=True, auto_select must be a list (or None)
+    auto_select = [files[0]['value']] if len(files) == 1 else None
+    return is_open, files, auto_select, html.Div(f"{len(files)} file trovati (multi-selezionabile)", className="text-success small")
 
 # 3. Path Selection and Button Enable
 @callback(
     [Output('cons-btn-load-file', 'disabled'),
-     Output('cons-selected-path', 'data')],
+     Output('cons-selected-paths', 'data')],
     Input('cons-file-dropdown', 'value'),
     prevent_initial_call=True
 )
-def cb_select_file(selected_path):
-    return (selected_path is None), selected_path
+def cb_select_file(selected_paths):
+    is_disabled = not selected_paths or len(selected_paths) == 0
+    return is_disabled, selected_paths if selected_paths else []
 
 # 4. Load Metadata
 @callback(
@@ -285,30 +287,39 @@ def cb_select_file(selected_path):
      Output("cons-status-msg", "children", allow_duplicate=True),
      Output('storage-info', 'data')],
     Input('cons-btn-load-file', 'n_clicks'),    
-    State('cons-selected-path', 'data'),
+    State('cons-selected-paths', 'data'),
     prevent_initial_call=True
 )
-def cb_load_file(n_clicks, selected_path):
-    if not selected_path or not os.path.exists(selected_path):
-        # We return no_update for stores but keep the Alert functional
-        return no_update, no_update, dbc.Alert("File non trovato.", color="danger", className="small"), no_update
+def cb_load_file(n_clicks, selected_paths):
+    if not selected_paths or len(selected_paths) == 0:
+        return no_update, no_update, dbc.Alert("Nessun file selezionato.", color="danger", className="small"), no_update
+    
+    # Validate all files exist
+    valid_paths = [p for p in selected_paths if os.path.exists(p)]
+    if not valid_paths:
+        return no_update, no_update, dbc.Alert("Nessun file valido trovato.", color="danger", className="small"), no_update
     
     try:
-        cfg = dp.get_wbin_metadata(selected_path)
+        # Load metadata from the first file (all files in same date folder share structure)
+        cfg = dp.get_wbin_metadata(valid_paths[0])
         meta = cfg.get('meta', {})
+        
+        file_count = len(valid_paths)
+        filenames = ", ".join([os.path.basename(p) for p in valid_paths])
         
         # Extract metadata and initialize TIME placeholders for the export logic
         info_data = {
             'campaign': meta.get('campaign', 'N/A'),
             'customer': meta.get('customer', 'N/A'),
             'coordinator': meta.get('coordinator', 'N/A'),
-            'filename': os.path.basename(selected_path),
+            'filenames': filenames,
+            'file_count': file_count,
             'total_blocks': cfg.get('total_blocks', 0),
             
             # These will be filled by your time-calculation logic/inputs later
             'comp_start': 'Not set',
             'comp_stop': 'Not set',
-            'excl_log': 'None',       # e.g., "12:10:00 to 12:20:00"
+            'excl_log': 'None',
             'total_duration': '0 min',
             'total_excluded': '0 min',
             'effective_time': '0 min'
@@ -317,7 +328,7 @@ def cb_load_file(n_clicks, selected_path):
         # UI Card display
         info_content = html.Div([
             html.Div([
-                html.B("File: "), html.Span(info_data['filename']),
+                html.B("Files: "), html.Span(str(file_count) + " file selezionati"),
                 html.Br(),
                 html.B("Campaign: "), html.Span(info_data['campaign']),
                 html.Br(),
@@ -325,18 +336,17 @@ def cb_load_file(n_clicks, selected_path):
                 html.Br(),
                 html.B("Coordinator: "), html.Span(info_data['coordinator']),
             ], className="small mb-2"),
-            html.P(f"Blocks: {info_data['total_blocks']}", className="small text-muted mb-0")
+            html.P(f"Total files: {file_count}", className="small text-muted mb-0")
         ])
 
         return (
             cfg, 
             info_content, 
-            dbc.Alert(f"✓ {info_data['filename']} caricato", color="success", className="small"),
+            dbc.Alert(f"✓ {file_count} file caricati", color="success", className="small"),
             info_data
         )
 
     except Exception as e:
-        # Maintain the alert output even on failure
         return no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger", className="small"), no_update
 
 
@@ -399,14 +409,18 @@ def manage_exclusions(add_n, rem_n, current_children):
         new_idx = len(current_children)
         new_row = dbc.Row([
             dbc.Col([
-                html.Label(f"Esclusione {new_idx + 1} - Inizio:", className="small text-muted"),
+                html.Label(f"Inizio:", className="small text-muted"),
                 dbc.Input(id={'type': 'exclude-start', 'index': new_idx}, type="time", value="12:00")
-            ], width=3),
+            ], width=2),
             dbc.Col([
-                html.Label(f"Esclusione {new_idx + 1} - Fine:", className="small text-muted"),
+                html.Label(f"Fine:", className="small text-muted"),
                 dbc.Input(id={'type': 'exclude-end', 'index': new_idx}, type="time", value="13:00")
-            ], width=3),
-        ], className="mb-2 animate__animated animate__fadeIn", id={'type': 'exclusion-row', 'index': new_idx})
+            ], width=2),
+            dbc.Col([
+                html.Label(f"Motivazione Esclusione:", className="small text-muted"),
+                dbc.Input(id={'type': 'exclude-reason', 'index': new_idx}, type="text", placeholder="Hai visto dov'è andata la fiamma? L'ho persa e non la riesco a ritrovare.")
+            ], width=5), # Text box for reason
+        ], className="mb-2 animate__animated animate__fadeIn", id={'type': 'exclusion-row', 'index': new_idx}, align="end")
         
         current_children.append(new_row)
         return current_children
@@ -447,13 +461,13 @@ def open_loading_modal(n):
      State({'type': 'exclude-start', 'index': ALL}, 'value'),
      State({'type': 'exclude-end', 'index': ALL}, 'value'),
      State("selected-tags-store", "data"),
-     State("cons-selected-path", "data"),
+     State("cons-selected-paths", "data"),
      State("cons-config-store", "data"),
      State("systems-checklist", "value")], # Metadata needed for SID mapping
     prevent_initial_call=True
 )
-def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, file_path, config_meta, systems):
-    if not file_path:
+def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, file_paths, config_meta, systems):
+    if not file_paths or len(file_paths) == 0:
         return False, no_update, no_update, dbc.Alert("⚠️ Seleziona un binario prima!", color="danger"), no_update
     if not selected_tags:
         return False, no_update, no_update, dbc.Alert("⚠️ Seleziona almeno una tag!", color="danger"), no_update
@@ -463,22 +477,25 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
             if ex_starts[i] < ex_ends[j] and ex_starts[j] < ex_ends[i]:
                 return False, no_update, no_update, dbc.Alert("❌ Esclusioni sovrapposte!", color="danger"), no_update
     try:
-        # 1. Get the actual start time of the binary file first
-        file_start_dt = dp.get_file_start_time(file_path, config_meta)
-        file_date = file_start_dt.date()
-        # 2. Convert your UI strings to datetime objects using the file's date
+        # Load and merge data from ALL selected binary files
+        raw_df, n_clamped = load_and_process_binaries(file_paths, selected_tags, config_meta)
+        clamp_warn = dbc.Alert(f"⚠️ {n_clamped} valori negativi azzerati.", color="warning") if n_clamped > 0 else ""
+
+        if raw_df.empty:
+            return False, no_update, no_update, dbc.Alert("⚠️ Nessun dato caricato dai file selezionati.", color="warning"), no_update
+
+        # Determine file_date from the merged dataframe index
+        file_date = raw_df.index.min().date()
+
+        # Convert UI time strings to datetime objects
         t_start = datetime.combine(file_date, datetime.strptime(start_t, "%H:%M").time())
         t_stop = datetime.combine(file_date, datetime.strptime(stop_t, "%H:%M").time())
 
-        # 3. Apply the 'max' logic: 
-        # Ensure we don't try to start BEFORE the file actually begins
-        t_start = max(t_start, file_start_dt)
+        # Clamp t_start/t_stop to actual data range
+        t_start = max(t_start, raw_df.index.min())
+        t_stop = min(t_stop, raw_df.index.max())
 
-        # 4. Load the data using the calculated slice
-        raw_df, n_clamped = load_and_process_binary(file_path, selected_tags, config_meta, t_start, t_stop)
-        clamp_warn = dbc.Alert(f"⚠️ {n_clamped} valori negativi azzerati.", color="warning") if n_clamped > 0 else ""
-
-        # 5. Now create calcDf safely
+        # Now create calcDf safely
         tag_info_df = dfCons[dfCons['Tag'].isin(selected_tags)]
         calcDf = calculate_cumulative_data(raw_df, tag_info_df)
         results = []
@@ -490,6 +507,8 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
                 "MeasurementUnit": "IN USO"
             })
         for tag in selected_tags:
+            if tag not in calcDf.columns:
+                continue
             # Get values at start/stop using 'asof' for safety
             v_start = calcDf[tag].asof(t_start)
             v_stop = calcDf[tag].asof(t_stop)
@@ -513,29 +532,30 @@ def cb_calculate_consumi(n, start_t, stop_t, ex_starts, ex_ends, selected_tags, 
                 "MeasurementUnit": tag_info_df[tag_info_df['Tag'] == tag]['MeasurementUnit'].values[0]
             })
 
-        return False, {"display": "block"}, results, dbc.Alert("✅ Calcolo terminato.", color="success"), clamp_warn
+        return False, {"display": "block"}, results, dbc.Alert("✅ Calcolo terminato su {} file.".format(len(file_paths)), color="success"), clamp_warn
     except Exception as e:
         return False, no_update, no_update, dbc.Alert(f"Errore: {str(e)}", color="danger"), no_update
 
 @callback(
-    # We update the storage so the Export function can see it later
     Output('storage-info', 'data', allow_duplicate=True),
     Input('btn-calculate', 'n_clicks'),
     [State('storage-info', 'data'),
      State('time-start-comp', 'value'),
      State('time-stop-comp', 'value'),
      State({'type': 'exclude-start', 'index': ALL}, 'value'),
-     State({'type': 'exclude-end', 'index': ALL}, 'value')],
+     State({'type': 'exclude-end', 'index': ALL}, 'value'),
+     State({'type': 'exclude-reason', 'index': ALL}, 'value')], # Added state
     prevent_initial_call=True
 )
-def sync_params_to_storage(n, current_info, start_val, stop_val, ex_starts, ex_ends):
+def sync_params_to_storage(n, current_info, start_val, stop_val, ex_starts, ex_ends, ex_reasons):
     if not n or current_info is None:
         return no_update
     
     current_info['comp_start'] = start_val
     current_info['comp_stop'] = stop_val
     current_info['exclusions'] = [
-        {'start': s, 'stop': e} for s, e in zip(ex_starts, ex_ends)
+        {'start': s, 'stop': e, 'reason': r} # Added reason to dictionary
+        for s, e, r in zip(ex_starts, ex_ends, ex_reasons)
     ]
     
     return current_info
@@ -569,44 +589,37 @@ def export_formatted_text(n, grid_data, info):
     # --- HEADER ---
     output.write("--- Info ---\n")
     output.write(f"Campagna:   {info.get('campaign', 'N/A')}\n")
-    output.write(f"Cliente:   {info.get('customer', 'N/A')}\n")
+    output.write(f"Cliente:    {info.get('customer', 'N/A')}\n")
     output.write("-" * 30 + "\n\n")
     
     # --- TIME LOG ---
     output.write("TIME LOG:\n")
     output.write(f"  [Accensione COMP]  {info.get('comp_start', '--:--:--')}\n")
     
-    # Loop through exclusions stored in the list
     exclusions_list = info.get('exclusions', [])
     if exclusions_list:
         for i, slot in enumerate(exclusions_list, 1):
             s = slot.get('start', 'N/A')
             e = slot.get('stop', 'N/A')
-            output.write(f"  [EXCL{i}]  {s} to {e}\n")
+            r = slot.get('reason', '')
+            reason_str = f" | Motivo: {r}" if r else ""
+            output.write(f"  [EXCL{i}]  {s} to {e}{reason_str}\n")
     else:
         output.write("  [EXCL ]  None\n")
         
     output.write(f"  [Spegnimento COMP ]  {info.get('comp_stop', '--:--:--')}\n")
     output.write("\n\n")
     
-    # --- TABLE DATA ---
-    # Widths: Tag(35), Desc(60), Val(15), Unit(15)
+    # ... rest of the table formatting logic ...
+    # (Same as your original code)
     w_tag, w_desc, w_val, w_unit = 35, 60, 15, 15
-    
-    header = (
-        "TAG".ljust(w_tag) + 
-        "DESCRIZIONE".ljust(w_desc) + 
-        "VALUE".ljust(w_val) + 
-        "UNIT".ljust(w_unit) + "\n"
-    )
+    header = "TAG".ljust(w_tag) + "DESCRIZIONE".ljust(w_desc) + "VALUE".ljust(w_val) + "UNIT".ljust(w_unit) + "\n"
     output.write(header)
     output.write("-" * (w_tag + w_desc + w_val + w_unit) + "\n")
     
     for _, row in df.iterrows():
         val = row.get('Value')
-        # Format numbers to 3 decimals, otherwise use raw string
         val_str = f"{val:.3f}" if isinstance(val, (int, float)) else str(val or "")
-        
         line = (
             str(row.get('Tag', '')).ljust(w_tag) +
             str(row.get('Description', '')).ljust(w_desc) +
@@ -617,12 +630,73 @@ def export_formatted_text(n, grid_data, info):
     
     content = output.getvalue()
     output.close()
-    
     filename = f"Report_{info.get('campaign', 'Export')}.txt".replace(" ", "_")
     return dcc.send_string(content, filename)
 
-
 #region functions
+def load_and_process_binaries(file_paths, selected_tags, config_metadata):
+    """
+    Load and merge data from multiple binary files.
+    Each file gets its own metadata loaded to handle potential structural differences.
+    
+    Returns a single concatenated DataFrame sorted by timestamp.
+    """
+    analog_channels = config_metadata.get('analog_channels', [])
+    tag_to_sid = {ch['tag']: ch['sid'] for ch in analog_channels if ch['tag'] in selected_tags}
+    target_sids = list(tag_to_sid.values())
+
+    if not target_sids:
+        raise ValueError("Nessun SID corrispondente trovato per i tag selezionati.")
+
+    all_dfs = []
+    total_clamped = 0
+    
+    for file_path in file_paths:
+        if not os.path.exists(file_path):
+            continue
+        
+        try:
+            # Load per-file metadata to handle potential structural differences
+            file_config = dp.get_wbin_metadata(file_path)
+            
+            # Build per-file tag_to_sid in case channel order differs
+            file_analog = file_config.get('analog_channels', [])
+            file_tag_to_sid = {ch['tag']: ch['sid'] for ch in file_analog if ch['tag'] in selected_tags}
+            file_target_sids = list(file_tag_to_sid.values())
+            
+            if not file_target_sids:
+                continue
+            
+            # Read data from this file (no time slicing - load all, filter after merge)
+            raw_df = dp.read_wbin_data(file_path, file_target_sids, file_config)
+            if raw_df.empty:
+                continue
+            
+            # Count and clamp negative values
+            total_clamped += (raw_df < 0).sum().sum()
+            raw_df = raw_df.clip(lower=0)
+            
+            # Rename SID columns to tag names for this file
+            file_sid_to_tag = {v: k for k, v in file_tag_to_sid.items()}
+            raw_df.rename(columns=file_sid_to_tag, inplace=True)
+            
+            all_dfs.append(raw_df)
+        except Exception as e:
+            # Skip files that fail to load, continue with others
+            continue
+    
+    if not all_dfs:
+        return pd.DataFrame(), 0
+    
+    # Concatenate all DataFrames
+    merged_df = pd.concat(all_dfs, ignore_index=False)
+    
+    # Sort by datetime index to ensure proper chronological order
+    merged_df = merged_df.sort_index()
+    
+    return merged_df, total_clamped
+
+
 def load_and_process_binary(file_path, selected_tags, config_metadata, t_start=None, t_stop=None):
     analog_channels = config_metadata.get('analog_channels', [])
     tag_to_sid = {ch['tag']: ch['sid'] for ch in analog_channels if ch['tag'] in selected_tags}

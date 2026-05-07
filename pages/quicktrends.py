@@ -14,6 +14,7 @@ import dash_daq as daq
 import dash_ag_grid as dag
 
 from asyncua import Client
+from asyncua import ua
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -65,6 +66,64 @@ class TagSubHandler:
                 tag_data[tag_name].append((ts, fval))
 
 # ── OPC UA BACKGROUND THREAD ──────────────────────────────────────────────
+async def subscription_watcher(client, subscription, subscribed_tags):
+    while True:
+        with state_lock:
+            current = set(active_tags)
+
+        # Print live values
+        if current:
+            # print("[OPC] Current values:")
+            for tag in sorted(current):
+                dq = tag_data.get(tag, deque())
+                if dq:
+                    ts, val = dq[-1]
+                    # print(f"  {tag}: {val:.4f} @ {ts.strftime('%H:%M:%S')}")
+                else:
+                    print(f"  {tag}: no data yet")
+
+        # Subscribe new tags
+        new_tags = current - subscribed_tags
+        if new_tags:
+            print(f"[OPC] Subscribing to {len(new_tags)} new tags...")
+            nodes = []
+            for tag in new_tags:
+                try:
+                    node = client.get_node(f"ns={OPC_NS};s={tag}.Value")
+                    nodes.append((tag, node))
+                except Exception as e:
+                    print(f"[OPC] Node lookup failed for {tag}: {e}")
+
+            BATCH = 50
+            for i in range(0, len(nodes), BATCH):
+                batch = nodes[i:i + BATCH]
+                try:
+                    handles = await subscription.subscribe_data_change(
+                        [n for _, n in batch],
+                        sampling_interval=1000,
+                    )
+                    for (tag, node), _ in zip(batch, handles):
+                        node_to_tag[node.nodeid.Identifier] = tag
+                        subscribed_tags.add(tag)
+                    print(f"[OPC] Subscribed batch {i // BATCH + 1} ({len(batch)} tags)")
+                except Exception as e:
+                    print(f"[OPC] Subscription batch error: {e}")
+                await asyncio.sleep(0.1)
+
+        await asyncio.sleep(2)
+
+async def heartbeat(subscribed_tags):
+    """Stamp all active tags every second so static values still plot."""
+    while True:
+        now = datetime.now()
+        with state_lock:
+            for tag in subscribed_tags:
+                dq = tag_data.get(tag)
+                if dq:
+                    _, last_val = dq[-1]
+                    tag_data[tag].append((now, last_val))
+        await asyncio.sleep(1)
+
 async def opc_loop():
     global opc_connected, cached_tags_list
 
@@ -74,8 +133,8 @@ async def opc_loop():
             with state_lock:
                 cached_tags_list = [l.strip() for l in f if l.strip()]
         print(f"[OPC] Loaded {len(cached_tags_list)} tags from cache")
-        print(f"[OPC] First 10: {cached_tags_list[:10]}")
-        print(f"[OPC] Last  10: {cached_tags_list[-10:]}")
+        # print(f"[OPC] First 10: {cached_tags_list[:10]}")
+        # print(f"[OPC] Last  10: {cached_tags_list[-10:]}")
     else:
         print("[OPC] WARNING: No tags_cache.txt found — tag dropdown will be empty")
 
@@ -85,7 +144,7 @@ async def opc_loop():
         client = Client(OPC_URL)
         client.set_user(os.getenv("OPC_USER", "Administrator"))
         client.set_password(os.getenv("OPC_PASSWORD", ""))
-        client.session_timeout = 60_000   # 60 s — stale sessions expire faster
+        client.session_timeout = 60_000
 
         try:
             await client.connect()
@@ -94,52 +153,13 @@ async def opc_loop():
             subscribed_tags.clear()
             node_to_tag.clear()
 
-            handler     = TagSubHandler()
+            handler      = TagSubHandler()
             subscription = await client.create_subscription(1000, handler)
 
-            while True:
-                with state_lock:
-                    current = set(active_tags)
-
-                # Print live values for active tags
-                if current:
-                    print("[OPC] Current values:")
-                    for tag in sorted(current):
-                        dq = tag_data.get(tag, deque())
-                        if dq:
-                            ts, val = dq[-1]
-                            print(f"  {tag}: {val:.4f} @ {ts.strftime('%H:%M:%S')}")
-                        else:
-                            print(f"  {tag}: no data yet")
-
-                new_tags = current - subscribed_tags
-                if new_tags:
-                    print(f"[OPC] Subscribing to {len(new_tags)} new tags...")
-                    nodes = []
-                    for tag in new_tags:
-                        try:
-                            node = client.get_node(f"ns={OPC_NS};s={tag}.Value")
-                            nodes.append((tag, node))
-                        except Exception as e:
-                            print(f"[OPC] Node lookup failed for {tag}: {e}")
-
-                    BATCH = 50
-                    for i in range(0, len(nodes), BATCH):
-                        batch = nodes[i:i + BATCH]
-                        try:
-                            handles = await subscription.subscribe_data_change(
-                                [n for _, n in batch],
-                                sampling_interval=1000,
-                            )
-                            for (tag, node), _ in zip(batch, handles):
-                                node_to_tag[node.nodeid.Identifier] = tag
-                                subscribed_tags.add(tag)
-                            print(f"[OPC] Subscribed batch {i // BATCH + 1} ({len(batch)} tags)")
-                        except Exception as e:
-                            print(f"[OPC] Subscription batch error: {e}")
-                        await asyncio.sleep(0.1)
-
-                await asyncio.sleep(2)
+            await asyncio.gather(
+                subscription_watcher(client, subscription, subscribed_tags),
+                heartbeat(subscribed_tags),
+            )
 
         except Exception as e:
             print(f"[OPC] Connection error: {e}")
@@ -413,6 +433,8 @@ layout = dbc.Container([
                 dcc.Dropdown(id="qt-preset-dropdown", placeholder="Seleziona un Preset...", className="mb-4"),
                 dbc.Input(id="qt-new-preset-name", placeholder="Nome nuovo preset...", type="text", className="mb-4"),
                 dbc.Button("Salva selezione corrente", id="save-preset-btn", color="primary", className="w-100 mb-3"),
+                # dbc.Button("💀 Kill OPC Sessions", id="qt-btn-kill-sessions", color="danger", outline=True, className="w-100 mb-3"),
+                # html.Div(id="qt-kill-sessions-msg", className="small"),
             ], style={"padding": "20px", "borderRight": "1px solid #ddd", "minHeight": "90vh"})
         ], id="qt-sidebar-col", width=3),
 
@@ -420,7 +442,12 @@ layout = dbc.Container([
         dbc.Col([
             dcc.Loading(
                 html.Div(
-                    dcc.Graph(id="qt-main-graph", style={"height": "100%", "width": "100%"}),
+                    # dcc.Graph(id="qt-main-graph", style={"height": "100%", "width": "100%"}),
+                    dcc.Graph(
+                        id="qt-main-graph", style={"height": "100%", "width": "100%"},
+                        config={"displayModeBar": False},   # optional, removes toolbar flicker
+                        figure=go.Figure(),
+                    ),
                     style={
                         "height": "80vh", "minHeight": "300px", "overflow": "hidden",
                         "resize": "vertical", "borderBottom": "2px solid #ddd",
@@ -770,18 +797,17 @@ def cb_live_refresh(n, info_rows):
 @callback(
     [Output("qt-main-graph", "figure"),
      Output("qt-info-table", "rowData")],
-    [Input("qt-btn-plot",      "n_clicks"),
-     Input("qt-main-graph",    "relayoutData"),
-     Input("qt-redraw-store",  "data")],
-    [State("qt-tag-dropdown",      "value"),
-     State("qt-info-table",        "rowData"),
-     State("qt-axis-config-grid",  "rowData"),
-     State("qt-x-range-store",     "data"),
-     State("qt-y-ranges-store",    "data"),
-     State("qt-fontsize-input",    "value")],
+    [Input("qt-btn-plot",     "n_clicks"),
+     Input("qt-redraw-store", "data")],
+    [State("qt-tag-dropdown",     "value"),
+     State("qt-info-table",       "rowData"),
+     State("qt-axis-config-grid", "rowData"),
+     State("qt-x-range-store",    "data"),
+     State("qt-y-ranges-store",   "data"),
+     State("qt-fontsize-input",   "value")],
     prevent_initial_call=True
 )
-def cb_render_graph(n_clicks, relayout_data, redraw_store,
+def cb_render_graph(n_clicks, redraw_store,
                     selected_tags, current_rows_state,
                     axis_defs, x_store, y_store, font_size):
     if not selected_tags:
@@ -789,31 +815,19 @@ def cb_render_graph(n_clicks, relayout_data, redraw_store,
 
     ctx     = dash.callback_context
     trigger = ctx.triggered[0]["prop_id"].split(".")[0]
+    reason  = (redraw_store or {}).get("reason", "")
 
     current_rows = list(current_rows_state or [])
     axis_rows    = list(axis_defs or [])
     now          = datetime.now()
     start_dt     = now - timedelta(seconds=WINDOW_SECONDS)
 
-    if trigger == "qt-main-graph" and relayout_data:
-        keys   = set(relayout_data)
-        y_only = ("yaxis", "autosize")
-        if all(any(k.startswith(p) for p in y_only) for k in keys):
-            return no_update, no_update
-        if "xaxis.range[0]" in relayout_data:
-            try:
-                start_dt = datetime.fromisoformat(
-                    relayout_data["xaxis.range[0]"].replace("Z", ""))
-            except Exception:
-                pass
-    elif trigger in ("qt-redraw-store", "qt-live-interval"):
-        if x_store and x_store.get("x0"):
-            try:
-                start_dt = datetime.fromisoformat(x_store["x0"])
-            except Exception:
-                pass
+    if x_store and x_store.get("x0"):
+        try:
+            start_dt = datetime.fromisoformat(x_store["x0"])
+        except Exception:
+            pass
 
-    # Register tags for OPC polling
     with state_lock:
         for t in selected_tags:
             active_tags.add(t)
@@ -821,6 +835,11 @@ def cb_render_graph(n_clicks, relayout_data, redraw_store,
     colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA",
               "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
 
+    # Determine which reasons require a layout change vs data-only update
+    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "autoscale"}
+    needs_layout_rebuild = (trigger == "qt-btn-plot" or reason in LAYOUT_REASONS)
+
+    # Always reconcile rows (preserving user edits)
     new_rows = []
     for i, tag in enumerate(selected_tags):
         existing = next((r for r in current_rows if r.get("tag") == tag), None)
@@ -828,39 +847,69 @@ def cb_render_graph(n_clicks, relayout_data, redraw_store,
             new_rows.append(dict(existing))
         else:
             new_rows.append({
-                "tag":       tag,
-                "desc":      tag,
-                "axis_sel":  "Custom",
-                "color":     colors[i % len(colors)],
-                "axis_id":   1,
+                "tag":        tag,
+                "desc":       tag,
+                "axis_sel":   "Custom",
+                "color":      colors[i % len(colors)],
+                "axis_id":    1,
                 "delete-row": "✘",
-                "_selected": False,
-                "cur_val":   "",
+                "_selected":  False,
+                "cur_val":    "",
             })
-
     current_rows = new_rows
 
-    # Update cur_val from latest data
+    time_axis, data_dict = _get_data_for_tags(selected_tags, start_dt)
+
+    if needs_layout_rebuild:
+        # Full figure rebuild only when axes/colors/layout actually changed
+        used_ids     = set(int(r["axis_id"]) for r in current_rows)
+        existing_ids = set(int(a["id"]) for a in axis_rows)
+        for aid in used_ids:
+            if aid not in existing_ids:
+                axis_rows.append({"id": aid, "preset": "Custom",
+                                  "name": f"Asse {aid}", "rangeMIN": "", "rangeMAX": ""})
+        axis_rows = sorted(axis_rows, key=lambda x: int(x["id"]))
+        ax_map    = {str(a["id"]): a for a in axis_rows}
+
+        fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
+                            font_size=int(font_size or 10))
+
+        # ✅ Suppress the transition animation on full rebuilds
+        fig.update_layout(
+            transition={"duration": 0},
+            uirevision="stable",   # prevents zoom/pan reset between updates
+        )
+        return fig, current_rows
+
+    # ✅ Data-only patch — no layout touched, no flash
+    patched = Patch()
+    for i, row in enumerate(current_rows):
+        tag   = row["tag"]
+        ydata = data_dict.get(tag, [])
+        patched["data"][i]["x"] = time_axis
+        patched["data"][i]["y"] = ydata
+
+    return patched, no_update
+@callback(
+    Output("qt-info-table", "rowData", allow_duplicate=True),
+    Input("qt-live-interval", "n_intervals"),
+    State("qt-info-table", "rowData"),
+    prevent_initial_call=True
+)
+def cb_live_update_values(n, current_rows):
+    """Only update cur_val, never touch anything else."""
+    if not current_rows:
+        return no_update
+    new_rows = []
     with state_lock:
         for row in current_rows:
+            row = dict(row)
             dq = tag_data.get(row["tag"], deque())
             if dq:
                 _, val = dq[-1]
                 row["cur_val"] = f"{val:.3f}"
-
-    used_ids     = set(int(r["axis_id"]) for r in current_rows)
-    existing_ids = set(int(a["id"]) for a in axis_rows)
-    for aid in used_ids:
-        if aid not in existing_ids:
-            axis_rows.append({"id": aid, "preset": "Custom",
-                              "name": f"Asse {aid}", "rangeMIN": "", "rangeMAX": ""})
-    axis_rows = sorted(axis_rows, key=lambda x: int(x["id"]))
-    ax_map    = {str(a["id"]): a for a in axis_rows}
-
-    time_axis, data_dict = _get_data_for_tags(selected_tags, start_dt)
-    fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
-                        font_size=int(font_size or 10))
-    return fig, current_rows
+            new_rows.append(row)
+    return new_rows
 
 # ─── 12. OPEN AXIS MODAL ─────────────────────────────────────────────────
 @callback(
@@ -1157,3 +1206,32 @@ def cb_export_pdf(n_clicks, figure):
     fig      = go.Figure(figure)
     pdf      = fig.to_image(format="pdf", width=1920, height=1080, scale=1)
     return dcc.send_bytes(pdf, filename=filename)
+
+
+# @callback(
+#     Output("qt-kill-sessions-msg", "children"),
+#     Input("qt-btn-kill-sessions", "n_clicks"),
+#     prevent_initial_call=True
+# )
+# def cb_kill_sessions(n_clicks):
+#     if not n_clicks:
+#         return no_update
+    
+#     async def _kill():
+#         msgs = []
+#         for i in range(5):  # try to kill up to 5 stale sessions
+#             client = Client(OPC_URL)
+#             client.set_user(os.getenv("OPC_USER", "Administrator"))
+#             client.set_password(os.getenv("OPC_PASSWORD", ""))
+#             client.session_timeout = 10_000
+#             try:
+#                 await client.connect()
+#                 await client.disconnect()
+#                 msgs.append(f"Session {i+1} closed")
+#             except Exception as e:
+#                 msgs.append(f"Done ({e})")
+#                 break
+#         return msgs
+
+#     msgs = asyncio.run(_kill())
+#     return dbc.Alert("\n".join(msgs), color="success", className="mt-2")
