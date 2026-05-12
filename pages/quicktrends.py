@@ -121,17 +121,31 @@ async def heartbeat(subscribed_tags):
                 dq = tag_data.get(tag)
                 if dq:
                     _, last_val = dq[-1]
-                    tag_data[tag].append((now, last_val))
+                    tag_data[opc_tag].append((now, last_val))
         await asyncio.sleep(1)
 
 async def opc_loop():
-    global opc_connected, cached_tags_list
+    global opc_connected, cached_tags_list, tag_descriptions 
 
     # Load tag list from cache before doing anything else
+    tag_descriptions = {}  # add to shared state at the top
+
+    # in opc_loop, replace the cache loading block:
     if os.path.exists(TAGS_CACHE_FILE):
         with open(TAGS_CACHE_FILE) as f:
             with state_lock:
-                cached_tags_list = [l.strip() for l in f if l.strip()]
+                cached_tags_list = []
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    if ';' in line:
+                        tag, desc = line.split(';', 1)
+                        cached_tags_list.append(tag)
+                        tag_descriptions[tag] = desc
+                    else:
+                        cached_tags_list.append(line)
+                        tag_descriptions[line] = line
         print(f"[OPC] Loaded {len(cached_tags_list)} tags from cache")
         # print(f"[OPC] First 10: {cached_tags_list[:10]}")
         # print(f"[OPC] Last  10: {cached_tags_list[-10:]}")
@@ -223,15 +237,11 @@ def _ax_key(aid_int):
     return "yaxis" if aid_int == 1 else f"yaxis{aid_int}"
 
 def get_tag_dataframe(selected_tags=None):
-    """
-    Returns a DataFrame [timestamp, tag, value] for the last WINDOW_SECONDS.
-    Optionally filtered to selected_tags.
-    """
     cutoff = datetime.now() - timedelta(seconds=WINDOW_SECONDS)
     rows = []
     with state_lock:
         tags_to_scan = selected_tags if selected_tags else list(tag_data.keys())
-        for tag in tags_to_scan:
+        for tag in tags_to_scan:  # was 'opc_tag' by mistake
             dq = tag_data.get(tag, deque())
             for ts, val in dq:
                 if ts >= cutoff:
@@ -398,6 +408,7 @@ layout = dbc.Container([
                     {"headerName": "Nome",     "field": "name",     "editable": True},
                     {"headerName": "Range Min","field": "rangeMIN", "editable": True, "width": 100},
                     {"headerName": "Range Max","field": "rangeMAX", "editable": True, "width": 100},
+                    {"field": "opc_tag", "hide": True},
                 ],
                 rowData=[{"id": 1, "name": "Asse 1", "preset": "Custom", "rangeMIN": "", "rangeMAX": ""}],
                 dashGridOptions={"singleClickEdit": True, "stopEditingWhenCellsLoseFocus": True}
@@ -440,7 +451,6 @@ layout = dbc.Container([
 
         # Graph area
         dbc.Col([
-            dcc.Loading(
                 html.Div(
                     # dcc.Graph(id="qt-main-graph", style={"height": "100%", "width": "100%"}),
                     dcc.Graph(
@@ -453,8 +463,7 @@ layout = dbc.Container([
                         "resize": "vertical", "borderBottom": "2px solid #ddd",
                         "paddingBottom": "5px", "border": "1px solid #4C78A8"
                     }
-                ), type="default"
-            ),
+                ), 
             dbc.Row([
                 dbc.Col(dbc.Button("⚙️ CONFIGURA ASSI", id="qt-btn-axis-modal",
                                    color="secondary", outline=True, size="sm"), width="auto"),
@@ -736,6 +745,7 @@ def cb_cell_value_changed(cell_changed, info_rows, axis_rows, y_store):
         for r in new_rows:
             if r["tag"] == row_tag:
                 r["tag"] = new_tag
+                # opc_tag stays untouched
         return new_rows, no_update, no_update, {"ts": datetime.now().isoformat(), "reason": "tag_edit"}
 
     if col_id == "axis_sel":
@@ -829,8 +839,8 @@ def cb_render_graph(n_clicks, redraw_store,
             pass
 
     with state_lock:
-        for t in selected_tags:
-            active_tags.add(t)
+        for r in current_rows:
+            active_tags.add(r["opc_tag"])
 
     colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA",
               "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
@@ -839,16 +849,18 @@ def cb_render_graph(n_clicks, redraw_store,
     LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "autoscale"}
     needs_layout_rebuild = (trigger == "qt-btn-plot" or reason in LAYOUT_REASONS)
 
-    # Always reconcile rows (preserving user edits)
+    # reconcile rows first
     new_rows = []
+    existing_tags = {r["tag"] for r in current_rows}
     for i, tag in enumerate(selected_tags):
-        existing = next((r for r in current_rows if r.get("tag") == tag), None)
+        existing = next((r for r in current_rows if r.get("opc_tag") == tag), None)
         if existing:
             new_rows.append(dict(existing))
         else:
             new_rows.append({
                 "tag":        tag,
-                "desc":       tag,
+                "opc_tag":    tag,
+                "desc":       tag_descriptions.get(tag, tag),
                 "axis_sel":   "Custom",
                 "color":      colors[i % len(colors)],
                 "axis_id":    1,
@@ -858,8 +870,14 @@ def cb_render_graph(n_clicks, redraw_store,
             })
     current_rows = new_rows
 
-    time_axis, data_dict = _get_data_for_tags(selected_tags, start_dt)
+    # now register OPC tags
+    with state_lock:
+        for r in current_rows:
+            active_tags.add(r["opc_tag"])
 
+    time_axis, data_dict = _get_data_for_tags(
+        [r["opc_tag"] for r in current_rows], start_dt
+    )
     if needs_layout_rebuild:
         # Full figure rebuild only when axes/colors/layout actually changed
         used_ids     = set(int(r["axis_id"]) for r in current_rows)
@@ -881,15 +899,21 @@ def cb_render_graph(n_clicks, redraw_store,
         )
         return fig, current_rows
 
-    # ✅ Data-only patch — no layout touched, no flash
     patched = Patch()
+    now = datetime.now()
     for i, row in enumerate(current_rows):
-        tag   = row["tag"]
-        ydata = data_dict.get(tag, [])
+        ydata = data_dict.get(row["opc_tag"], [])
         patched["data"][i]["x"] = time_axis
         patched["data"][i]["y"] = ydata
 
+    patched["layout"]["xaxis"]["range"] = [
+        (now - timedelta(seconds=WINDOW_SECONDS)).isoformat(),
+        now.isoformat()
+    ]
+    patched["layout"]["transition"] = {"duration": 0}
+
     return patched, no_update
+
 @callback(
     Output("qt-info-table", "rowData", allow_duplicate=True),
     Input("qt-live-interval", "n_intervals"),
@@ -904,7 +928,7 @@ def cb_live_update_values(n, current_rows):
     with state_lock:
         for row in current_rows:
             row = dict(row)
-            dq = tag_data.get(row["tag"], deque())
+            dq = tag_data.get(row.get("opc_tag", row["tag"]), deque())
             if dq:
                 _, val = dq[-1]
                 row["cur_val"] = f"{val:.3f}"
