@@ -319,11 +319,11 @@ def _get_data_for_tags(selected_tags, start_dt, n_pts=1000):
 
     return all_times, data_dict
 
-def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=10):
+def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=12):
     fig = go.Figure()
     
     # Base linewidth calculation based on font size
-    base_linewidth = 1.5 * (1 + (font_size - 10) * 0.10)
+    base_linewidth = 1.5 * (1 + (font_size - 12) * 0.10)
     
     used_ids_int  = sorted(set(int(r["axis_id"]) for r in current_rows))
     num_subplots  = len(used_ids_int)
@@ -341,7 +341,8 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size
         
         fig.add_trace(go.Scattergl(
             x=time_axis, y=ydata,
-            yaxis=f"y{aid}" if aid != "1" else "y",            
+            yaxis=f"y{aid}" if aid != "1" else "y",      
+            mode="lines",                 
             name=row["name"], # Now uses the editable name for Plotly internals
             meta=row["tag"],  # Keeps the hardware tag as the permanent ID
             line=dict(color=row["color"], width=linewidth),
@@ -542,14 +543,14 @@ layout = dbc.Container([
                 dbc.Col([
                     dbc.InputGroup([
                         dbc.InputGroupText("⏱"),
-                        dbc.Input(id="qt-window-input", type="text", value="20:00",
+                        dbc.Input(id="qt-window-input", type="text", value="5:00",
                                 debounce=True, size="sm", style={"width": "70px"}),
                     ], size="sm"),
                 ], width="auto"),
                 dbc.Col([
                     dbc.InputGroup([
                         dbc.Button("−", id="qt-btn-fontsize-down", color="secondary", outline=True, size="sm"),
-                        dbc.Input(id="qt-fontsize-input", type="text", value="10", debounce=True,
+                        dbc.Input(id="qt-fontsize-input", type="text", value="12", debounce=True,
                                 size="sm", style={"width": "52px", "textAlign": "center"}),
                         dbc.Button("+", id="qt-btn-fontsize-up", color="secondary", outline=True, size="sm"),
                     ], size="sm"),
@@ -568,11 +569,6 @@ layout = dbc.Container([
                     {"headerName": "🎨   ", "field": "color", "width": 60,
                      "resizable": False, "suppressSizeToFit": True},
                     {"headerName": "Tag",  "field": "tag", "hide": True},
-                    # {"headerName": "Name",  "field": "name",  "singleClickEdit": True,
-                    #  "resizable": True, "editable": True, "flex": 1,
-                    #  "cellStyle": {"styleConditions": [
-                    #      {"condition": "params.data._selected === true",
-                    #       "style": {"fontWeight": "bold"}}]}},
                     {
                         "headerName": "Name", 
                         "field": "name", 
@@ -593,10 +589,6 @@ layout = dbc.Container([
                             ]
                         }
                     },
-                    # {"headerName": "Descrizione", "field": "desc", "resizable": True, "flex": 2,
-                    #  "cellStyle": {"styleConditions": [
-                    #      {"condition": "params.data._selected === true",
-                    #       "style": {"fontWeight": "bold"}}]}},
                     {
                         "headerName": "Description", 
                         "field": "desc", 
@@ -608,18 +600,21 @@ layout = dbc.Container([
                             ]
                         }
                     },
-                    {"headerName": "Valore", "field": "cur_val", "width": 100, "resizable": True,
-                     "cellStyle": {"styleConditions": [
-                         {"condition": "params.data._selected === true",
-                          "style": {"fontWeight": "bold", "textAlign": "right"}}],
-                                   "defaultStyle": {"textAlign": "right"}}},
+                    {"headerName": "Cursore", "field": "cursor_val", "width": 100, "resizable": True,
+                        "cellStyle": {"defaultStyle": {"textAlign": "right"}}
+                    },
+                    {"headerName": "Attuale", "field": "cur_val", "width": 100, "resizable": True,
+                        "cellStyle": {"defaultStyle": {"textAlign": "right"}}
+                    },
                     {"headerName": "Asse", "field": "axis_sel", "singleClickEdit": True,
-                     "editable": True, "cellEditor": "agSelectCellEditor",
-                     "cellEditorParams": {"values": AXIS_DROPDOWN_OPTIONS}, "width": 100},
+                        "editable": True, "cellEditor": "agSelectCellEditor",
+                        "cellEditorParams": {"values": AXIS_DROPDOWN_OPTIONS}, "width": 100
+                     },
                     {"headerName": "Rimuovi", "field": "delete-row", "width": 90,
-                     "suppressSizeToFit": False, "resizable": False,
-                     "cellStyle": {"cursor": "pointer", "textAlign": "center",
-                                   "color": "red", "fontWeight": "bold"}},
+                        "suppressSizeToFit": False, "resizable": False,
+                        "cellStyle": {"cursor": "pointer", "textAlign": "center",
+                                    "color": "red", "fontWeight": "bold"}
+                    },
                 ],
                 defaultColDef={"resizable": True, "sortable": False, "filter": False},
                 rowData=[],
@@ -627,6 +622,7 @@ layout = dbc.Container([
                                 "getRowId": "params.data.tag", # Crucial: tells AG Grid how to identify rows
                                 "suppressScrollOnNewData": True,
                                 "undoRedoCellEditing": True,
+                                "domLayout": "autoHeight",
                                 }
             )
         ], id="qt-main-col", width=9, style={"position": "relative"})
@@ -736,24 +732,34 @@ def add_axis_row(n, rows):
 def update_on_click(clickData, current_table, fig):
     if not clickData or not current_table or not fig:
         return no_update, no_update
-    clicked_x  = clickData["points"][0]["x"]
-    clicked_dt = datetime.fromisoformat(clicked_x)
+    clicked_x = clickData["points"][0]["x"]
+    try:
+        clicked_dt = datetime.fromisoformat(clicked_x.replace("Z", ""))
+    except Exception:
+        return no_update, no_update
+
     for row in current_table:
         tag = row["tag"]
         val = "---"
         for trace in fig["data"]:
-            if trace.get("name") and tag in trace["name"]:
+            if trace.get("meta") == tag:
                 try:
-                    x_vals = [datetime.fromisoformat(v) if isinstance(v, str) else v
-                              for v in trace["x"]]
-                    if clicked_dt in x_vals:
-                        idx   = x_vals.index(clicked_dt)
-                        y_val = trace["y"][idx]
-                        val   = f"{y_val:.3f}"
+                    x_vals = trace.get("x") or []
+                    y_vals = trace.get("y") or []
+                    if not x_vals or not y_vals:
+                        break
+                    # Parse all x to datetime and find nearest
+                    dts = [datetime.fromisoformat(str(v).replace("Z", "")) for v in x_vals]
+                    diffs = [abs((dt - clicked_dt).total_seconds()) for dt in dts]
+                    idx = diffs.index(min(diffs))
+                    y_val = y_vals[idx]
+                    if y_val is not None:
+                        val = f"{y_val:.3f}"
                 except Exception:
                     pass
                 break
-        row["cur_val"] = val
+        row["cursor_val"] = val
+
     cursor_line = {
         "type": "line", "x0": clicked_x, "x1": clicked_x,
         "y0": 0, "y1": 1, "yref": "paper",
@@ -948,12 +954,13 @@ def cb_live_refresh(n, info_rows):
      State("qt-axis-config-grid", "rowData"),
      State("qt-x-range-store",    "data"),
      State("qt-y-ranges-store",   "data"),
-     State("qt-fontsize-input",   "value")],
+     State("qt-fontsize-input",   "value"),
+     State("qt-window-input",     "value")],
     prevent_initial_call=True
 )
 def cb_render_graph(n_clicks, redraw_store,
                     selected_tags, current_rows_state,
-                    axis_defs, x_store, y_store, font_size):
+                    axis_defs, x_store, y_store, font_size, window_value):  
     if not selected_tags:
         return go.Figure(), []
 
@@ -996,14 +1003,13 @@ def cb_render_graph(n_clicks, redraw_store,
                 "delete-row": "✘",
                 "_selected":  False,
                 "cur_val":    "",
+                "cursor_val": "",
             })
     current_rows = new_rows
 
     now = datetime.now()
-    start_dt = now - timedelta(seconds=WINDOW_SECONDS)
-    if x_store and x_store.get("x0"):
-        try: start_dt = datetime.fromisoformat(x_store["x0"])
-        except: pass
+    seconds = parse_mmss(window_value or "5:00")
+    start_dt = now - timedelta(seconds=seconds)
 
     clean_tag_list = [r["tag"] for r in current_rows]
     time_axis, data_dict = _get_data_for_tags(clean_tag_list, start_dt)
@@ -1014,22 +1020,29 @@ def cb_render_graph(n_clicks, redraw_store,
     if needs_layout_rebuild:
         ax_map = {str(a["id"]): a for a in (axis_rows or [])}
         fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
-                            font_size=int(font_size or 10))
+                            font_size=int(font_size or 12))
         fig.update_layout(transition={"duration": 0}, uirevision="stable")
         return fig, current_rows
 
     # --- Legend Sync via Patch ---
+    now = datetime.now()
+    seconds = parse_mmss(...)  # you need the window value here
+    start = now - timedelta(seconds=seconds)
+
+    now = datetime.now()
+    seconds = parse_mmss(window_value or "5:00")
+    start = now - timedelta(seconds=seconds)
+
     patched = Patch()
+    patched["layout"]["xaxis"]["range"] = [start.isoformat(), now.isoformat()]
+    patched["layout"]["xaxis"]["autorange"] = False
+
     for i, row in enumerate(current_rows):
         tag = row["tag"]
         ydata = data_dict.get(tag, [])
         patched["data"][i]["x"] = time_axis
         patched["data"][i]["y"] = ydata
-        
-        # SYNC LEGEND: Use the 'name' field from the AG Grid row
         patched["data"][i]["name"] = row.get("name", tag)
-        
-        # Keep identifier in meta so cb_cell_clicked can still find the trace
         patched["data"][i]["meta"] = tag
 
     return patched, no_update
@@ -1037,20 +1050,12 @@ def cb_render_graph(n_clicks, redraw_store,
 @callback(
     Output("qt-info-table", "rowData", allow_duplicate=True),
     Input("qt-live-interval", "n_intervals"),
-    [State("qt-info-table", "rowData"),
-     State("qt-info-table", "cellClicked")], # We check what was last clicked
+    State("qt-info-table", "rowData"),
     prevent_initial_call=True
 )
-def cb_live_update_values(n, current_rows, last_clicked):
-    """Update only the values. If getRowId is set in the layout, focus is preserved."""
+def cb_live_update_values(n, current_rows):
     if not current_rows:
         return no_update
-    
-    # Optional: If you want to stop ALL updates while a specific column is active
-    # col_id = (last_clicked or {}).get("colId")
-    # if col_id == "name":
-    #     return no_update
-
     new_rows = []
     with state_lock:
         for row in current_rows:
@@ -1060,8 +1065,8 @@ def cb_live_update_values(n, current_rows, last_clicked):
                 _, val = dq[-1]
                 row["cur_val"] = f"{val:.3f}"
             new_rows.append(row)
-            
     return new_rows
+
 # ─── 12. OPEN AXIS MODAL ─────────────────────────────────────────────────
 @callback(
     [Output("qt-axis-modal",      "is_open"),
@@ -1377,3 +1382,21 @@ def cb_export_pdf(n_clicks, figure):
     pdf      = fig.to_image(format="pdf", width=1920, height=1080, scale=1)
     return dcc.send_bytes(pdf, filename=filename)
 
+# 23. APPLY TIME RANGE
+@callback(
+    Output("qt-main-graph", "figure", allow_duplicate=True),
+    Input("qt-window-input", "n_submit"),
+    [State("qt-window-input", "value"),
+     State("qt-main-graph", "figure")],
+    prevent_initial_call=True
+)
+def cb_apply_window(n_submit, window_value, figure):
+    if not figure or not window_value:
+        return no_update
+    seconds = parse_mmss(window_value)
+    now = datetime.now()
+    start = now - timedelta(seconds=seconds)
+    patched = Patch()
+    patched["layout"]["xaxis"]["range"] = [start.isoformat(), now.isoformat()]
+    patched["layout"]["xaxis"]["autorange"] = False
+    return patched

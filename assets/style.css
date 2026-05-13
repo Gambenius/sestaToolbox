@@ -116,3 +116,9 @@ div[class*="daq-colorpicker--container"] > div {
     margin-bottom: 2px;
     font-size: 0.85rem;
 }
+
+
+/* --------------- PLOT ------------------*/
+.js-plotly-plot .plotly text {
+    font-family: "Inter", sans-serif !important;
+}
