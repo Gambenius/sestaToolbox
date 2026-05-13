@@ -144,15 +144,18 @@ async def subscription_watcher(client, subscription, subscribed_tags):
         await asyncio.sleep(2)
 
 async def heartbeat(subscribed_tags):
-    """Stamp all active tags every second so static values still plot."""
+    """Stamp all active tags every second so static values still plot.
+    Skips tags that received a real update in the last 800ms."""
     while True:
         now = datetime.now()
         with state_lock:
             for tag in subscribed_tags:
                 dq = tag_data.get(tag)
                 if dq:
-                    _, last_val = dq[-1]
-                    tag_data[tag].append((now, last_val))
+                    last_ts, last_val = dq[-1]
+                    # Only stamp if no real update in the last 800ms
+                    if (now - last_ts).total_seconds() >= 0.8:
+                        tag_data[tag].append((now, last_val))
         await asyncio.sleep(1)
 
 async def opc_loop():
@@ -266,10 +269,6 @@ def _ax_key(aid_int):
     return "yaxis" if aid_int == 1 else f"yaxis{aid_int}"
 
 def get_tag_dataframe(selected_tags=None):
-    """
-    Returns a DataFrame [timestamp, tag, value] for the last WINDOW_SECONDS.
-    Optionally filtered to selected_tags.
-    """
     cutoff = datetime.now() - timedelta(seconds=WINDOW_SECONDS)
     rows = []
     with state_lock:
@@ -285,6 +284,12 @@ def get_tag_dataframe(selected_tags=None):
 
     df = pd.DataFrame(rows)
     df = df.sort_values("timestamp").reset_index(drop=True)
+    
+    # Round timestamps to nearest second and deduplicate, keeping last value
+    df["timestamp_s"] = df["timestamp"].dt.floor("s")
+    df = df.drop_duplicates(subset=["tag", "timestamp_s"], keep="last")
+    df = df.drop(columns="timestamp_s").reset_index(drop=True)
+    
     return df
 
 def _get_data_for_tags(selected_tags, start_dt, n_pts=1000):
@@ -465,6 +470,8 @@ layout = dbc.Container([
     dcc.Interval(id="qt-opc-status-interval", interval=5000,  n_intervals=0),
     dcc.Interval(id="qt-live-interval",       interval=2000,  n_intervals=0),  # live redraw
     dcc.Store(id="qt-opc-status",             data=False),
+    dcc.Store(id="qt-last-render-store", data=0),
+
 
     # Axis modal
     dbc.Modal([
@@ -946,7 +953,8 @@ def cb_live_refresh(n, info_rows):
 # ─── 11. MAIN RENDER ─────────────────────────────────────────────────────
 @callback(
     [Output("qt-main-graph", "figure"),
-     Output("qt-info-table", "rowData")],
+     Output("qt-info-table", "rowData"),
+     Output("qt-last-render-store", "data")],
     [Input("qt-btn-plot",     "n_clicks"),
      Input("qt-redraw-store", "data")],
     [State("qt-tag-dropdown",     "value"),
@@ -962,7 +970,7 @@ def cb_render_graph(n_clicks, redraw_store,
                     selected_tags, current_rows_state,
                     axis_defs, x_store, y_store, font_size, window_value):  
     if not selected_tags:
-        return go.Figure(), []
+        return go.Figure(), [], datetime.now().timestamp()
 
     ctx     = dash.callback_context
     trigger = ctx.triggered[0]["prop_id"].split(".")[0]
@@ -1022,7 +1030,7 @@ def cb_render_graph(n_clicks, redraw_store,
         fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
                             font_size=int(font_size or 12))
         fig.update_layout(transition={"duration": 0}, uirevision="stable")
-        return fig, current_rows
+        return fig, current_rows, datetime.now().timestamp()
 
     # --- Legend Sync via Patch ---
     now = datetime.now()
@@ -1045,16 +1053,20 @@ def cb_render_graph(n_clicks, redraw_store,
         patched["data"][i]["name"] = row.get("name", tag)
         patched["data"][i]["meta"] = tag
 
-    return patched, no_update
+    return patched, no_update, datetime.now().timestamp()
 
 @callback(
     Output("qt-info-table", "rowData", allow_duplicate=True),
     Input("qt-live-interval", "n_intervals"),
-    State("qt-info-table", "rowData"),
+    [State("qt-info-table", "rowData"),
+     State("qt-last-render-store", "data")],
     prevent_initial_call=True
 )
-def cb_live_update_values(n, current_rows):
+def cb_live_update_values(n, current_rows, last_render_ts):
     if not current_rows:
+        return no_update
+    # Skip update if a full render happened less than 2 seconds ago
+    if last_render_ts and (datetime.now().timestamp() - last_render_ts) < 2.0:
         return no_update
     new_rows = []
     with state_lock:
