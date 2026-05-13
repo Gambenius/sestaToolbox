@@ -18,8 +18,12 @@ from asyncua import ua
 from dotenv import load_dotenv
 load_dotenv()
 
-dash.register_page(__name__, path="/quickt")
-
+dash.register_page(
+    __name__, 
+    path="/quickt", 
+    name="Quicktrends",  # This is how it appears in links/registry
+    title="Quicktrends"  # This is what appears in the browser tab
+)
 # ── CONSTANTS ──────────────────────────────────────────────────────────────
 AXIS_PRESETS = {
     "Custom":  {"name": "",                  "rangeMIN": "",    "rangeMAX": ""},
@@ -39,7 +43,7 @@ AXIS_DROPDOWN_OPTIONS = list(AXIS_PRESETS.keys()) + ["1", "2", "3", "4", "5"]
 OPC_URL        = "opc.tcp://10.33.126.101:51800"
 OPC_NS         = 3
 TAGS_CACHE_FILE = "utils/tags_cache.txt"
-PRESETS_FILE   = "utils/binrev_presets.txt"
+PRESETS_FILE   = "utils/quicktrends_presets.txt"
 WINDOW_SECONDS = 1200   # 20 min rolling window
 MAX_POINTS_PER_TAG = 10_000
 
@@ -278,25 +282,37 @@ def _get_data_for_tags(selected_tags, start_dt, n_pts=1000):
 
 def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=10):
     fig = go.Figure()
-    linewidth = 1.5 * (1 + (font_size - 10) * 0.10)
+    
+    # Base linewidth calculation based on font size
+    base_linewidth = 1.5 * (1 + (font_size - 10) * 0.10)
+    
     used_ids_int  = sorted(set(int(r["axis_id"]) for r in current_rows))
     num_subplots  = len(used_ids_int)
     spacing       = 0.08
     p_height      = (1.0 - spacing * max(1, num_subplots - 1)) / max(1, num_subplots)
 
+    # 1. Add Traces
     for row in current_rows:
         aid  = str(row["axis_id"])
         tag  = row["tag"]
         ydata = data_dict.get(tag, [])
+        
+        # Selection highlighting: thicker line if row is selected
+        linewidth = base_linewidth * 2.5 if row.get("_selected") else base_linewidth
+        
         fig.add_trace(go.Scattergl(
-            x=time_axis, y=ydata, name=tag,
-            yaxis=f"y{aid}" if aid != "1" else "y",
+            x=time_axis, y=ydata,
+            yaxis=f"y{aid}" if aid != "1" else "y",            
+            name=row["name"], # Now uses the editable name for Plotly internals
+            meta=row["tag"],  # Keeps the hardware tag as the permanent ID
             line=dict(color=row["color"], width=linewidth),
             showlegend=False,
             connectgaps=True,
-            hovertemplate=f"<b>{tag}</b>: %{{y:.3f}}<extra></extra>"
+            # Hover now shows the friendly name instead of just the tag
+            hovertemplate=f"<b>{row['name']}</b>: %{{y:.3f}}<extra></extra>"
         ))
 
+    # 2. Layout Base Configuration
     layout = {
         "template":      "plotly_white",
         "font":          {"size": font_size},
@@ -315,28 +331,35 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size
         }
     }
 
+    # 3. Subplot and Annotation logic
     for i, aid_int in enumerate(used_ids_int):
         aid     = str(aid_int)
         ak      = _ax_key(aid_int)
         ref_key = "y" if aid == "1" else f"y{aid}"
+        
         start_y = max(0.0, 1.0 - (i + 1) * p_height - i * spacing)
         end_y   = min(1.0, start_y + p_height)
         mid_y   = start_y + p_height / 2
 
+        # Add annotations for the "homemade legend" on the right
         subplot_rows = [r for r in current_rows if int(r["axis_id"]) == aid_int]
         for j, row in enumerate(subplot_rows):
             y_off = (len(subplot_rows) / 2 - j) * 0.035
+            
+            # This annotation now correctly displays the 'name' field
             layout["annotations"].append(dict(
                 x=1.02, y=mid_y + y_off,
                 xref="paper", yref="paper",
-                text=f"<b>{row['tag']}</b>",
+                text=f"<b>{row['name']}</b>", # Display name follows your edit
                 showarrow=False,
                 font=dict(color=row["color"], size=font_size),
                 xanchor="left"
             ))
 
+        # Axis Configuration (Limits and Labels)
         conf   = ax_map.get(aid, {})
         stored = y_store.get(ak) if y_store else None
+        
         if isinstance(stored, list) and len(stored) == 2 and None not in stored:
             y_range, autorange = stored, False
         elif stored == "auto":
@@ -359,6 +382,7 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size
         }
         if y_range:
             ax_def["range"] = y_range
+            
         layout[ak] = ax_def
 
         if i == num_subplots - 1:
@@ -440,38 +464,43 @@ layout = dbc.Container([
 
         # Graph area
         dbc.Col([
-            dcc.Loading(
-                html.Div(
-                    # dcc.Graph(id="qt-main-graph", style={"height": "100%", "width": "100%"}),
-                    dcc.Graph(
-                        id="qt-main-graph", style={"height": "100%", "width": "100%"},
-                        config={"displayModeBar": False},   # optional, removes toolbar flicker
-                        figure=go.Figure(),
-                    ),
-                    style={
-                        "height": "80vh", "minHeight": "300px", "overflow": "hidden",
-                        "resize": "vertical", "borderBottom": "2px solid #ddd",
-                        "paddingBottom": "5px", "border": "1px solid #4C78A8"
-                    }
-                ), type="default"
+            html.Div(
+                # dcc.Graph(id="qt-main-graph", style={"height": "100%", "width": "100%"}),
+                dcc.Graph(
+                    id="qt-main-graph", style={"height": "100%", "width": "100%"},
+                    config={"displayModeBar": False},   # optional, removes toolbar flicker
+                    figure=go.Figure(),
+                ),
+                style={
+                    "height": "80vh", "minHeight": "300px", "overflow": "hidden",
+                    "resize": "vertical", "borderBottom": "2px solid #ddd",
+                    "paddingBottom": "5px", "border": "1px solid #4C78A8"
+                }
             ),
             dbc.Row([
                 dbc.Col(dbc.Button("⚙️ CONFIGURA ASSI", id="qt-btn-axis-modal",
-                                   color="secondary", outline=True, size="sm"), width="auto"),
+                                color="secondary", outline=True, size="sm"), width="auto"),
                 dbc.Col(html.Small("Usa la colonna 'Asse' per raggruppare i canali",
-                                   className="text-muted"), className="text-end me-auto"),
+                                className="text-muted"), className="text-end me-auto"),
+                dbc.Col([
+                    dbc.InputGroup([
+                        dbc.InputGroupText("⏱"),
+                        dbc.Input(id="qt-window-input", type="text", value="20:00",
+                                debounce=True, size="sm", style={"width": "70px"}),
+                    ], size="sm"),
+                ], width="auto"),
                 dbc.Col([
                     dbc.InputGroup([
                         dbc.Button("−", id="qt-btn-fontsize-down", color="secondary", outline=True, size="sm"),
                         dbc.Input(id="qt-fontsize-input", type="text", value="10", debounce=True,
-                                  size="sm", style={"width": "52px", "textAlign": "center"}),
+                                size="sm", style={"width": "52px", "textAlign": "center"}),
                         dbc.Button("+", id="qt-btn-fontsize-up", color="secondary", outline=True, size="sm"),
                     ], size="sm"),
                 ], width="auto"),
                 dbc.Col(dbc.Button("🔍 Autoscale Y", id="qt-btn-autoscale",
-                                   color="secondary", outline=True, size="sm"), width="auto"),
+                                color="secondary", outline=True, size="sm"), width="auto"),
                 dbc.Col(dbc.Button("📄 Salva come PDF", id="qt-btn-export-pdf",
-                                   color="secondary", outline=True, size="sm"), width="auto"),
+                                color="secondary", outline=True, size="sm"), width="auto"),
                 dcc.Download(id="qt-download-pdf"),
             ], className="my-2 align-items-center g-2"),
 
@@ -481,15 +510,47 @@ layout = dbc.Container([
                 columnDefs=[
                     {"headerName": "🎨   ", "field": "color", "width": 60,
                      "resizable": False, "suppressSizeToFit": True},
-                    {"headerName": "Tag",  "field": "tag",  "singleClickEdit": True,
-                     "resizable": True, "editable": True, "flex": 1,
-                     "cellStyle": {"styleConditions": [
-                         {"condition": "params.data._selected === true",
-                          "style": {"fontWeight": "bold"}}]}},
-                    {"headerName": "Descrizione", "field": "desc", "resizable": True, "flex": 2,
-                     "cellStyle": {"styleConditions": [
-                         {"condition": "params.data._selected === true",
-                          "style": {"fontWeight": "bold"}}]}},
+                    {"headerName": "Tag",  "field": "tag", "hide": True},
+                    # {"headerName": "Name",  "field": "name",  "singleClickEdit": True,
+                    #  "resizable": True, "editable": True, "flex": 1,
+                    #  "cellStyle": {"styleConditions": [
+                    #      {"condition": "params.data._selected === true",
+                    #       "style": {"fontWeight": "bold"}}]}},
+                    {
+                        "headerName": "Name", 
+                        "field": "name", 
+                        "singleClickEdit": True,
+                        "resizable": True, 
+                        "editable": True, 
+                        "flex": 1,
+                        "cellStyle": {
+                            "styleConditions": [
+                                {
+                                    "condition": "params.data._selected === true",
+                                    "style": {"fontWeight": "bold", "color": "#000"} 
+                                },
+                                {
+                                    "condition": "params.data._selected === false || params.data._selected === undefined",
+                                    "style": {"fontWeight": "normal"}
+                                }
+                            ]
+                        }
+                    },
+                    # {"headerName": "Descrizione", "field": "desc", "resizable": True, "flex": 2,
+                    #  "cellStyle": {"styleConditions": [
+                    #      {"condition": "params.data._selected === true",
+                    #       "style": {"fontWeight": "bold"}}]}},
+                    {
+                        "headerName": "Description", 
+                        "field": "desc", 
+                        "flex": 2,
+                        "cellStyle": {
+                            "styleConditions": [
+                                {"condition": "params.data._selected === true", "style": {"fontWeight": "bold"}},
+                                {"condition": "params.data._selected !== true", "style": {"fontWeight": "normal"}}
+                            ]
+                        }
+                    },
                     {"headerName": "Valore", "field": "cur_val", "width": 100, "resizable": True,
                      "cellStyle": {"styleConditions": [
                          {"condition": "params.data._selected === true",
@@ -505,7 +566,11 @@ layout = dbc.Container([
                 ],
                 defaultColDef={"resizable": True, "sortable": False, "filter": False},
                 rowData=[],
-                dashGridOptions={"rowClassRules": {"selected-row": "params.data.tag === selectedTag"}}
+                dashGridOptions={"rowClassRules": {"selected-row": "params.data.tag === selectedTag"},
+                                "getRowId": "params.data.tag", # Crucial: tells AG Grid how to identify rows
+                                "suppressScrollOnNewData": True,
+                                "undoRedoCellEditing": True,
+                                }
             )
         ], id="qt-main-col", width=9, style={"position": "relative"})
     ], className="mt-3")
@@ -715,8 +780,8 @@ def cb_track_y_ranges(relayout_data, current_store):
 @callback(
     [Output("qt-info-table",      "rowData",  allow_duplicate=True),
      Output("qt-axis-config-grid","rowData",  allow_duplicate=True),
-     Output("qt-y-ranges-store",  "data",     allow_duplicate=True),
-     Output("qt-redraw-store",    "data",     allow_duplicate=True)],
+     Output("qt-y-ranges-store",   "data",     allow_duplicate=True),
+     Output("qt-redraw-store",     "data",     allow_duplicate=True)],
     Input("qt-info-table", "cellValueChanged"),
     [State("qt-info-table",       "rowData"),
      State("qt-axis-config-grid", "rowData"),
@@ -726,21 +791,16 @@ def cb_track_y_ranges(relayout_data, current_store):
 def cb_cell_value_changed(cell_changed, info_rows, axis_rows, y_store):
     if not cell_changed or not info_rows:
         return no_update, no_update, no_update, no_update
+    
     changed = cell_changed[0]
     col_id  = changed.get("colId")
+    row_tag = changed["data"]["tag"]
 
-    if col_id == "tag":
-        new_tag = changed["value"]
-        row_tag = changed["data"]["tag"]
-        new_rows = [dict(r) for r in info_rows]
-        for r in new_rows:
-            if r["tag"] == row_tag:
-                r["tag"] = new_tag
-        return new_rows, no_update, no_update, {"ts": datetime.now().isoformat(), "reason": "tag_edit"}
+    if col_id == "name":
+        return info_rows, no_update, no_update, {"ts": datetime.now().isoformat(), "reason": "name_edit"}
 
     if col_id == "axis_sel":
         selected  = changed["value"]
-        row_tag   = changed["data"]["tag"]
         axis_rows = [dict(r) for r in (axis_rows or [])]
         info_rows = [dict(r) for r in info_rows]
         y_store   = dict(y_store or {})
@@ -819,38 +879,31 @@ def cb_render_graph(n_clicks, redraw_store,
 
     current_rows = list(current_rows_state or [])
     axis_rows    = list(axis_defs or [])
-    now          = datetime.now()
-    start_dt     = now - timedelta(seconds=WINDOW_SECONDS)
-
-    if x_store and x_store.get("x0"):
-        try:
-            start_dt = datetime.fromisoformat(x_store["x0"])
-        except Exception:
-            pass
-
+    
     with state_lock:
-        for t in selected_tags:
-            active_tags.add(t)
+        active_tags.clear()
+        for full_entry in selected_tags:
+            clean_tag = full_entry.split(";")[0].strip()
+            active_tags.add(clean_tag)
 
-    colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA",
-              "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
-
-    # Determine which reasons require a layout change vs data-only update
-    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "autoscale"}
-    needs_layout_rebuild = (trigger == "qt-btn-plot" or reason in LAYOUT_REASONS)
-
-    # Always reconcile rows (preserving user edits)
     new_rows = []
-    for i, tag in enumerate(selected_tags):
-        existing = next((r for r in current_rows if r.get("tag") == tag), None)
+    for i, full_entry in enumerate(selected_tags):
+        t_id = full_entry.split(";")[0].strip()
+        t_desc = full_entry.split(";", 1)[1].strip() if ";" in full_entry else t_id
+
+        existing = next((r for r in current_rows if r.get("tag") == t_id), None)
+        
         if existing:
             new_rows.append(dict(existing))
-        else:
+        elif reason != "delete": 
+            colors = ["#636EFA", "#EF553B", "#00CC96", "#AB63FA",
+                      "#FFA15A", "#19D3F3", "#FF6692", "#B6E880"]
             new_rows.append({
-                "tag":        tag,
-                "desc":       tag,
+                "tag":        t_id,
+                "name":       t_id,    # Initialized to tag
+                "desc":       t_desc,
                 "axis_sel":   "Custom",
-                "color":      colors[i % len(colors)],
+                "color":      colors[len(new_rows) % len(colors)],
                 "axis_id":    1,
                 "delete-row": "✘",
                 "_selected":  False,
@@ -858,48 +911,58 @@ def cb_render_graph(n_clicks, redraw_store,
             })
     current_rows = new_rows
 
-    time_axis, data_dict = _get_data_for_tags(selected_tags, start_dt)
+    now = datetime.now()
+    start_dt = now - timedelta(seconds=WINDOW_SECONDS)
+    if x_store and x_store.get("x0"):
+        try: start_dt = datetime.fromisoformat(x_store["x0"])
+        except: pass
+
+    clean_tag_list = [r["tag"] for r in current_rows]
+    time_axis, data_dict = _get_data_for_tags(clean_tag_list, start_dt)
+
+    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "autoscale", "name_edit"}
+    needs_layout_rebuild = (trigger == "qt-btn-plot" or (reason in LAYOUT_REASONS and reason != "live"))
 
     if needs_layout_rebuild:
-        # Full figure rebuild only when axes/colors/layout actually changed
-        used_ids     = set(int(r["axis_id"]) for r in current_rows)
-        existing_ids = set(int(a["id"]) for a in axis_rows)
-        for aid in used_ids:
-            if aid not in existing_ids:
-                axis_rows.append({"id": aid, "preset": "Custom",
-                                  "name": f"Asse {aid}", "rangeMIN": "", "rangeMAX": ""})
-        axis_rows = sorted(axis_rows, key=lambda x: int(x["id"]))
-        ax_map    = {str(a["id"]): a for a in axis_rows}
-
+        ax_map = {str(a["id"]): a for a in (axis_rows or [])}
         fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
                             font_size=int(font_size or 10))
-
-        # ✅ Suppress the transition animation on full rebuilds
-        fig.update_layout(
-            transition={"duration": 0},
-            uirevision="stable",   # prevents zoom/pan reset between updates
-        )
+        fig.update_layout(transition={"duration": 0}, uirevision="stable")
         return fig, current_rows
 
-    # ✅ Data-only patch — no layout touched, no flash
+    # --- Legend Sync via Patch ---
     patched = Patch()
     for i, row in enumerate(current_rows):
-        tag   = row["tag"]
+        tag = row["tag"]
         ydata = data_dict.get(tag, [])
         patched["data"][i]["x"] = time_axis
         patched["data"][i]["y"] = ydata
+        
+        # SYNC LEGEND: Use the 'name' field from the AG Grid row
+        patched["data"][i]["name"] = row.get("name", tag)
+        
+        # Keep identifier in meta so cb_cell_clicked can still find the trace
+        patched["data"][i]["meta"] = tag
 
     return patched, no_update
+
 @callback(
     Output("qt-info-table", "rowData", allow_duplicate=True),
     Input("qt-live-interval", "n_intervals"),
-    State("qt-info-table", "rowData"),
+    [State("qt-info-table", "rowData"),
+     State("qt-info-table", "cellClicked")], # We check what was last clicked
     prevent_initial_call=True
 )
-def cb_live_update_values(n, current_rows):
-    """Only update cur_val, never touch anything else."""
+def cb_live_update_values(n, current_rows, last_clicked):
+    """Update only the values. If getRowId is set in the layout, focus is preserved."""
     if not current_rows:
         return no_update
+    
+    # Optional: If you want to stop ALL updates while a specific column is active
+    # col_id = (last_clicked or {}).get("colId")
+    # if col_id == "name":
+    #     return no_update
+
     new_rows = []
     with state_lock:
         for row in current_rows:
@@ -909,8 +972,8 @@ def cb_live_update_values(n, current_rows):
                 _, val = dq[-1]
                 row["cur_val"] = f"{val:.3f}"
             new_rows.append(row)
+            
     return new_rows
-
 # ─── 12. OPEN AXIS MODAL ─────────────────────────────────────────────────
 @callback(
     [Output("qt-axis-modal",      "is_open"),
@@ -1007,14 +1070,14 @@ def cb_grid_preset_changed(cell_changed, axis_rows):
 
 # ─── 15. CELL CLICK: DELETE / COLOR / HIGHLIGHT ──────────────────────────
 @callback(
-    [Output("qt-info-table",          "rowData",  allow_duplicate=True),
-     Output("qt-main-graph",          "figure",   allow_duplicate=True),
-     Output("qt-tag-dropdown",        "value",    allow_duplicate=True),
-     Output("qt-selected-row-store",  "data"),
-     Output("qt-color-picker-modal",  "is_open"),
-     Output("qt-color-edit-store",    "data"),
-     Output("qt-color-input",         "value"),
-     Output("qt-redraw-store",        "data",     allow_duplicate=True)],
+    [Output("qt-info-table",           "rowData",  allow_duplicate=True),
+     Output("qt-main-graph",           "figure",   allow_duplicate=True),
+     Output("qt-tag-dropdown",         "value",    allow_duplicate=True),
+     Output("qt-selected-row-store",   "data"),
+     Output("qt-color-picker-modal",   "is_open"),
+     Output("qt-color-edit-store",     "data"),
+     Output("qt-color-input",          "value"),
+     Output("qt-redraw-store",         "data",     allow_duplicate=True)],
     Input("qt-info-table", "cellClicked"),
     [State("qt-info-table",    "rowData"),
      State("qt-main-graph",    "figure"),
@@ -1025,39 +1088,58 @@ def cb_cell_clicked(clicked, current_rows, fig, current_tags):
     nu = no_update
     if not clicked or not current_rows:
         return nu, nu, nu, nu, False, nu, nu, nu
+    
     row_idx = clicked.get("rowIndex")
     col_id  = clicked.get("colId")
-    if col_id in ("axis_sel", "tag"):
+    
+    # Do not interrupt if user is trying to edit Name or Axis Selection
+    if col_id in ("axis_sel", "name"):
         return nu, nu, nu, nu, False, nu, nu, nu
+        
     if row_idx is None or row_idx >= len(current_rows):
         return nu, nu, nu, None, False, nu, nu, nu
+        
     selected_tag = current_rows[row_idx]["tag"]
 
+    # --- Handle Deletion ---
     if col_id == "delete-row":
         new_table = [r for i, r in enumerate(current_rows) if i != row_idx]
         if fig and "data" in fig:
-            fig["data"] = [t for t in fig["data"] if selected_tag not in t.get("name", "")]
-        new_tags = [s for s in (current_tags or []) if s != selected_tag]
+            # Match by the tag stored in 'meta'
+            fig["data"] = [t for t in fig["data"] if selected_tag != t.get("meta")]
+        
+        # Sync dropdown: remove the entry that starts with this tag
+        new_tags = [s for s in (current_tags or []) if not s.startswith(selected_tag)]
+        
         with state_lock:
             active_tags.discard(selected_tag)
-        return new_table, fig, new_tags, None, False, None, None, \
-               {"ts": datetime.now().isoformat(), "reason": "delete"}
+            
+        return (new_table, fig, new_tags, None, False, None, None, 
+                {"ts": datetime.now().isoformat(), "reason": "delete"})
 
+    # --- Handle Color Picker ---
     if col_id == "color":
         current_color = current_rows[row_idx].get("color", "#0000FF")
         return nu, nu, nu, selected_tag, True, row_idx, {"hex": current_color}, nu
 
-    # Highlight row
+    # --- Handle Row Selection & Highlighting ---
+    # 1. Update the Plotly Figure (Highlight the selected trace)
     if fig and "data" in fig:
         for trace in fig["data"]:
-            trace["line"]["width"] = (4 if selected_tag in trace.get("name", "") else 1.5)
+            # Set width to 4 if it's the clicked tag, otherwise reset to 1.5
+            trace["line"]["width"] = (4 if selected_tag == trace.get("meta") else 1.5)
         fig["layout"]["uirevision"] = "static"
-    new_rows = []
+        
+    # 2. Update the Table Rows (Bold logic)
+    # We create a brand new list where ONLY the clicked tag is True
+    updated_rows = []
     for r in current_rows:
-        r = dict(r)
-        r["_selected"] = (r["tag"] == selected_tag)
-        new_rows.append(r)
-    return new_rows, fig, nu, selected_tag, False, None, None, nu
+        new_row = dict(r)
+        # This logic ensures only one row is True at a time
+        new_row["_selected"] = (new_row["tag"] == selected_tag)
+        updated_rows.append(new_row)
+        
+    return updated_rows, fig, nu, selected_tag, False, None, None, nu
 
 # ─── 16. COLOR CONFIRM ───────────────────────────────────────────────────
 @callback(
@@ -1207,3 +1289,11 @@ def cb_export_pdf(n_clicks, figure):
     pdf      = fig.to_image(format="pdf", width=1920, height=1080, scale=1)
     return dcc.send_bytes(pdf, filename=filename)
 
+def parse_mmss(s):
+    try:
+        parts = str(s).strip().split(":")
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(parts[0])
+    except Exception:
+        return WINDOW_SECONDS
