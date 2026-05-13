@@ -379,6 +379,16 @@ def list_bin_files(folder_path: str) -> list:
     files.sort(key=lambda x: x['value'])
     return files
 
+def chunks_in_order(chunks, haystack):
+    pos = 0
+    for chunk in chunks:
+        idx = haystack.find(chunk, pos)
+        if idx == -1:
+            return False
+        pos = idx + len(chunk)
+    return True
+
+
 # --- CALLBACK: APRI MODAL ---
 @callback(
     Output('wbin-file-modal', 'is_open'),
@@ -542,7 +552,7 @@ def cb_filter_tags(search, selected_values, cfg):
         target_text = f"{ch['tag']} {ch.get('desc', '')}".upper()
         
         # Un canale passa il filtro se contiene TUTTI i pezzi cercati
-        if all(chunk in target_text for chunk in chunks) or not chunks:
+        if chunks and chunks_in_order(chunks, target_text):
             matches.append({
                 # Il (search) alla fine serve a ingannare il filtro client di Dash
                 'label': f"[{item['type']}] {ch['tag']} - {ch.get('desc', '')[:35]} ({search})",

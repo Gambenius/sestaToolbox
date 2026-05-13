@@ -431,6 +431,24 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size
     fig.update_traces(xaxis="x")
     return fig
 
+def chunks_in_order(chunks, haystack):
+    pos = 0
+    for chunk in chunks:
+        idx = haystack.find(chunk, pos)
+        if idx == -1:
+            return False
+        pos = idx + len(chunk)
+    return True
+
+def parse_mmss(s):
+    try:
+        parts = str(s).strip().split(":")
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        return int(parts[0])
+    except Exception:
+        return WINDOW_SECONDS
+
 # ── LAYOUT ────────────────────────────────────────────────────────────────
 layout = dbc.Container([
     dcc.Store(id="qt-zoom-store",             data={"start": 0, "end": None}),
@@ -487,9 +505,9 @@ layout = dbc.Container([
                 html.Label("Cerca Canale:", className="small fw-bold"),
                 dcc.Dropdown(
                     id="qt-tag-dropdown", multi=True,
-                    placeholder="Cerca (es. AI_TEMP*)...",
+                    placeholder="Cerca (es. TEMP*507, *acqua*)...",
                     className="mb-4", options=[], searchable=True,
-                    maxHeight=500, optionHeight=50
+                    maxHeight=500, optionHeight=50,   # increased from 35
                 ),
                 dbc.Button("Mostra grafico", id="qt-btn-plot", color="primary", className="w-100 mb-3"),
                 html.Div(id="qt-plot-status", className="mb-3 small"),
@@ -644,24 +662,27 @@ def cb_opc_status_display(n):
 def cb_filter_tags(search, selected_values):
     with state_lock:
         pool = list(cached_tags_list)
-    # Read desc outside lock (it's write-once at startup, safe to read freely)
-    descs = cached_tags_desc
+    descs = cached_tags_desc  # write-once at startup, safe to read freely
 
-    def make_option(tag):
+    def make_option(tag, search_hint=None):
         desc = descs.get(tag, "")
-        label = f"{tag}  |  {desc}" if desc else tag
+        # Appending (search_hint) fools Dash's client-side filter into showing
+        # all server-returned results even when searching by description
+        suffix = f" ({search_hint})" if search_hint else ""
+        label = f"{tag}  -  {desc}{suffix}" if desc else f"{tag}{suffix}"
         return {"label": label, "value": tag}
 
     seen = set()
     final_options = []
 
-    # Always keep currently selected tags in options
+    # Always keep currently selected tags visible
     for tag in (selected_values or []):
         if tag in descs or tag in pool:
             final_options.append(make_option(tag))
             seen.add(tag)
 
-    if not search or not search.strip():
+# No search: show first 60 tags unfiltered
+    if not search or not search.strip() or search.strip() == "*":
         for tag in pool:
             if tag not in seen:
                 final_options.append(make_option(tag))
@@ -670,16 +691,19 @@ def cb_filter_tags(search, selected_values):
                 break
         return final_options
 
+    # Wildcard chunk search across tag + description
     s = search.upper().strip()
-    # Support wildcard: "TEMP*507" matches both chunks anywhere in tag+desc
-    chunks = [c.strip() for c in s.split("*") if c.strip()] if "*" in s else [s]
+    chunks = [c.strip() for c in s.split("*") if c.strip()]
+
+    if not chunks:   # nothing meaningful typed
+        return final_options
 
     for tag in pool:
         desc = descs.get(tag, "")
         haystack = f"{tag} {desc}".upper()
-        if all(chunk in haystack for chunk in chunks):
+        if chunks_in_order(chunks, haystack):
             if tag not in seen:
-                final_options.append(make_option(tag))
+                final_options.append(make_option(tag, search_hint=search))
                 seen.add(tag)
         if len(final_options) >= 100:
             break
@@ -786,7 +810,7 @@ def apply_preset(preset_name, current_options):
     for tag in selected_tags:
         if tag not in existing_ids:
             desc = descs.get(tag, "")
-            label = f"{tag}  |  {desc}" if desc else tag
+            label = f"{tag}  -  {desc}" if desc else tag
             new_options.append({"label": label, "value": tag, "search": f"{tag} {desc}"})
     return selected_tags, new_options
 
@@ -1353,11 +1377,3 @@ def cb_export_pdf(n_clicks, figure):
     pdf      = fig.to_image(format="pdf", width=1920, height=1080, scale=1)
     return dcc.send_bytes(pdf, filename=filename)
 
-def parse_mmss(s):
-    try:
-        parts = str(s).strip().split(":")
-        if len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        return int(parts[0])
-    except Exception:
-        return WINDOW_SECONDS
