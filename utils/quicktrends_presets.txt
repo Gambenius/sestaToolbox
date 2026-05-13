@@ -1,8 +1,8 @@
-TEMP TEST
+TEMP
 {
-X44TT012; Temperatura uscita acqua raffreddamento camicia VL cella 1
-X44TT016; Temperatura uscita acqua raffreddamento stelo VL cella 1
-X44TT014; Temperatura uscita acqua raffreddamento flangia VL cella 1
-X44TT023; Temperatura acqua  uscita refrigeranti Skid 1
-X44TT034; Temperatura acqua  uscita refrigeranti Skid 4
+X44TT012
+X44TT016
+X44TT014
+X44TT023
+X44TT034
 }

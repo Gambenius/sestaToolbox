@@ -53,8 +53,35 @@ tag_data      = defaultdict(lambda: deque(maxlen=MAX_POINTS_PER_TAG))
 active_tags   = set()
 state_lock    = threading.Lock()
 opc_connected = False
+# NEW — load cache eagerly at import time
 cached_tags_list = []
-node_to_tag   = {}   # nodeid.Identifier -> tag string
+cached_tags_desc = {}   # tag -> description string
+node_to_tag = {}
+
+def _load_tags_cache():
+    global cached_tags_list, cached_tags_desc
+    if not os.path.exists(TAGS_CACHE_FILE):
+        print("[CACHE] WARNING: No tags_cache.txt found — tag dropdown will be empty")
+        return
+    tags, descs = [], {}
+    with open(TAGS_CACHE_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if ";" in line:
+                tag, desc = line.split(";", 1)
+                tag, desc = tag.strip(), desc.strip()
+            else:
+                tag, desc = line.strip(), ""
+            if tag:
+                tags.append(tag)
+                descs[tag] = desc
+    cached_tags_list = tags
+    cached_tags_desc = descs
+    print(f"[CACHE] Loaded {len(tags)} tags")
+
+_load_tags_cache()
 
 # ── OPC UA SUBSCRIPTION HANDLER ───────────────────────────────────────────
 class TagSubHandler:
@@ -132,15 +159,27 @@ async def opc_loop():
     global opc_connected, cached_tags_list
 
     # Load tag list from cache before doing anything else
-    if os.path.exists(TAGS_CACHE_FILE):
-        with open(TAGS_CACHE_FILE) as f:
-            with state_lock:
-                cached_tags_list = [l.strip() for l in f if l.strip()]
-        print(f"[OPC] Loaded {len(cached_tags_list)} tags from cache")
-        # print(f"[OPC] First 10: {cached_tags_list[:10]}")
-        # print(f"[OPC] Last  10: {cached_tags_list[-10:]}")
-    else:
-        print("[OPC] WARNING: No tags_cache.txt found — tag dropdown will be empty")
+    # if os.path.exists(TAGS_CACHE_FILE):
+    #     with open(TAGS_CACHE_FILE) as f:
+    #         raw_lines = [l.strip() for l in f if l.strip()]
+    #     tags, descs = [], {}
+    #     for line in raw_lines:
+    #         if ";" in line:
+    #             tag, desc = line.split(";", 1)
+    #             tag = tag.strip()cb_filter_tags 
+    #             desc = desc.strip()
+    #         else:
+    #             tag = line.strip()
+    #             desc = ""
+    #         if tag:
+    #             tags.append(tag)
+    #             descs[tag] = desc
+    #     with state_lock:
+    #         cached_tags_list = tags
+    #         cached_tags_desc = descs
+    #     print(f"[OPC] Loaded {len(cached_tags_list)} tags from cache")
+    # else:
+    #     print("[OPC] WARNING: No tags_cache.txt found — tag dropdown will be empty")
 
     subscribed_tags = set()
 
@@ -450,7 +489,7 @@ layout = dbc.Container([
                     id="qt-tag-dropdown", multi=True,
                     placeholder="Cerca (es. AI_TEMP*)...",
                     className="mb-4", options=[], searchable=True,
-                    maxHeight=500, optionHeight=35
+                    maxHeight=500, optionHeight=50
                 ),
                 dbc.Button("Mostra grafico", id="qt-btn-plot", color="primary", className="w-100 mb-3"),
                 html.Div(id="qt-plot-status", className="mb-3 small"),
@@ -605,29 +644,46 @@ def cb_opc_status_display(n):
 def cb_filter_tags(search, selected_values):
     with state_lock:
         pool = list(cached_tags_list)
+    # Read desc outside lock (it's write-once at startup, safe to read freely)
+    descs = cached_tags_desc
+
+    def make_option(tag):
+        desc = descs.get(tag, "")
+        label = f"{tag}  |  {desc}" if desc else tag
+        return {"label": label, "value": tag}
+
+    seen = set()
     final_options = []
-    if selected_values:
-        for tag in selected_values:
-            if tag in pool:
-                final_options.append({"label": tag, "value": tag})
-    if not search:
-        existing_ids = [o["value"] for o in final_options]
-        for tag in pool[:50]:
-            if tag not in existing_ids:
-                final_options.append({"label": tag, "value": tag})
+
+    # Always keep currently selected tags in options
+    for tag in (selected_values or []):
+        if tag in descs or tag in pool:
+            final_options.append(make_option(tag))
+            seen.add(tag)
+
+    if not search or not search.strip():
+        for tag in pool:
+            if tag not in seen:
+                final_options.append(make_option(tag))
+                seen.add(tag)
+            if len(final_options) >= 60:
+                break
         return final_options
-    s      = search.upper().strip()
-    chunks = [c.strip() for c in s.split("*") if c.strip()]
-    matches = []
+
+    s = search.upper().strip()
+    # Support wildcard: "TEMP*507" matches both chunks anywhere in tag+desc
+    chunks = [c.strip() for c in s.split("*") if c.strip()] if "*" in s else [s]
+
     for tag in pool:
-        if all(chunk in tag.upper() for chunk in chunks) or not chunks:
-            matches.append({"label": tag, "value": tag})
-        if len(matches) >= 100:
+        desc = descs.get(tag, "")
+        haystack = f"{tag} {desc}".upper()
+        if all(chunk in haystack for chunk in chunks):
+            if tag not in seen:
+                final_options.append(make_option(tag))
+                seen.add(tag)
+        if len(final_options) >= 100:
             break
-    current_ids = [o["value"] for o in final_options]
-    for m in matches:
-        if m["value"] not in current_ids:
-            final_options.append(m)
+
     return final_options
 
 # ─── 2. AXIS CONFIG ROW ADD ──────────────────────────────────────────────
@@ -718,16 +774,20 @@ def save_current_selection(n_clicks, name, current_selection):
 def apply_preset(preset_name, current_options):
     if not preset_name:
         return no_update, no_update
-    presets       = load_presets_from_file()
+    presets = load_presets_from_file()
     selected_tags = presets.get(preset_name, [])
     with state_lock:
         for t in selected_tags:
             active_tags.add(t)
-    new_options  = list(current_options or [])
-    existing_ids = [o["value"] for o in new_options]
+        descs = dict(cached_tags_desc)
+
+    new_options = list(current_options or [])
+    existing_ids = {o["value"] for o in new_options}
     for tag in selected_tags:
         if tag not in existing_ids:
-            new_options.append({"label": f"{tag} (da preset)", "value": tag})
+            desc = descs.get(tag, "")
+            label = f"{tag}  |  {desc}" if desc else tag
+            new_options.append({"label": label, "value": tag, "search": f"{tag} {desc}"})
     return selected_tags, new_options
 
 # ─── 7. TRACK X RANGE ────────────────────────────────────────────────────
@@ -882,14 +942,18 @@ def cb_render_graph(n_clicks, redraw_store,
     
     with state_lock:
         active_tags.clear()
+        _desc_lookup = dict(cached_tags_desc)
+
         for full_entry in selected_tags:
             clean_tag = full_entry.split(";")[0].strip()
             active_tags.add(clean_tag)
 
     new_rows = []
+    _desc_lookup = cached_tags_desc  # safe: write-once at startup
+
     for i, full_entry in enumerate(selected_tags):
-        t_id = full_entry.split(";")[0].strip()
-        t_desc = full_entry.split(";", 1)[1].strip() if ";" in full_entry else t_id
+        t_id = full_entry.strip()
+        t_desc = _desc_lookup.get(t_id, "")
 
         existing = next((r for r in current_rows if r.get("tag") == t_id), None)
         
