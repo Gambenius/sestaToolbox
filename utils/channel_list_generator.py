@@ -6,7 +6,7 @@ from utils import data_processor as dp
 
 # ── CONFIG ────────────────────────────────────────────────────────────────
 BINARY_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE\20260407\APR071133.bin"
-OUTPUT_FILE = "tags_cache.txt"
+OUTPUT_FILE = "lists/tags_cache.txt"
 # ─────────────────────────────────────────────────────────────────────────
 
 cfg = dp.get_wbin_metadata(BINARY_PATH)

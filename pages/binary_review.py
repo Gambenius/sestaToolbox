@@ -37,7 +37,7 @@ n_pts = 1000 #shown in plots
 NETWORK_BASE_PATH = r"\\10.33.126.101\archivi\TOTALE\PROVE"
 # NETWORK_BASE_PATH = r"/home/edoardo/Documenti/sestaToolbox/data"
 
-PRESETS_FILE = "utils/binrev_presets.txt"
+PRESETS_FILE = "utils/lists/binrev_presets.txt"
 # ─────────────────────────────────────────────────────────────────
 # 1. LOGICA DI ESTRAZIONE METADATI (Mantenuta e rifinita)
 # ─────────────────────────────────────────────────────────────────

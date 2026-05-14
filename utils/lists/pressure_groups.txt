@@ -85,15 +85,4 @@ name = 1200
 tolerance = 0.05
 limits = (-1, 1)
 members = (P1201, P1202, P1203, P1204, P1205, P1206, P1207, P1208, P1209, P1210, P1211, P1212, P1213, P1214, P1215, P1216)
-<<<<<<< HEAD
-=======
-}
-GROUP
-{
-ID = 13
-name = boh test tc
-tolerance = 5
-limits = (0, 30)
-members = (X44TT012, X44TT016, X44TT014, X44TT023, X44TT034, CTOSI.X00TT001, CTOSI.X00TT001RTD)
->>>>>>> main
 }

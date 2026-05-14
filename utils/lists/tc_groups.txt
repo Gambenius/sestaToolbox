@@ -1,0 +1,117 @@
+GROUP
+{
+ID = 1
+name = Rakes
+tolerance = 5
+limits = (0, 1700)
+members = (PB_NODO_20.TC01,
+PB_NODO_20.TC02,
+PB_NODO_20.TC03,
+PB_NODO_20.TC04,
+PB_NODO_20.TC05,
+PB_NODO_20.TC06,
+PB_NODO_20.TC07,
+PB_NODO_20.TC08,
+PB_NODO_20.TC09,
+PB_NODO_20.TC10,
+PB_NODO_20.TC11,
+PB_NODO_20.TC12)
+}
+GROUP
+{
+ID = 2
+name = Outer BL Rake
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_20.TC21,
+PB_NODO_20.TC22,
+PB_NODO_20.TC23)
+}
+GROUP
+{
+ID = 3
+name = Inner BL Rake
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_20.TC24,
+PB_NODO_20.TC25,
+PB_NODO_20.TC26)
+}
+GROUP
+{
+ID = 4
+name = Inner liner
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_20.TC31,
+PB_NODO_20.TC32,
+PB_NODO_20.TC33,
+PB_NODO_20.TC34,
+PB_NODO_20.TC35,
+PB_NODO_20.TC36)
+}
+GROUP
+{
+ID = 5
+name = Light OFF 
+tolerance = 5
+limits = (0, 1260)
+members = (
+PB_NODO_22.TC03,
+PB_NODO_22.TC04,
+PB_NODO_22.TC05,
+PB_NODO_22.TC06,
+PB_NODO_22.TC07,
+PB_NODO_22.TC08,
+PB_NODO_22.TC09,
+PB_NODO_22.TC10,
+PB_NODO_22.TC11
+)
+}
+GROUP
+{
+ID = 6
+name = Exhaust Baffle 
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_22.TC12,
+PB_NODO_22.TC13
+)
+}
+GROUP
+{
+ID = 7
+name = Outer Dumplip
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_22.TC14,
+PB_NODO_22.TC15
+)
+}
+GROUP
+{
+ID = 8
+name = Inner Dumplip
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_22.TC16,
+PB_NODO_22.TC17
+
+)
+}
+GROUP
+{
+ID = 9
+name = Inner DL Liner
+tolerance = 5
+limits = (0, 1260)
+members = (PB_NODO_22.TC26,
+PB_NODO_22.TC27,
+PB_NODO_22.TC28,
+PB_NODO_22.TC29,
+PB_NODO_22.TC30,
+PB_NODO_22.TC31)
+}
+
+
+

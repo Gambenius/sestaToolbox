@@ -44,8 +44,8 @@ AXIS_DROPDOWN_OPTIONS = list(AXIS_PRESETS.keys()) + ["1", "2", "3", "4", "5"]
 
 OPC_URL        = "opc.tcp://10.33.126.101:51800"
 OPC_NS         = 3
-TAGS_CACHE_FILE = "utils/tags_cache.txt"
-PRESETS_FILE   = "utils/quicktrends_presets.txt"
+TAGS_CACHE_FILE = "utils/lists/tags_cache.txt"
+PRESETS_FILE   = "utils/lists/quicktrends_presets.txt"
 WINDOW_SECONDS = 1200   # 20 min rolling window
 
 # ── SHARED STATE ───────────────────────────────────────────────────────────

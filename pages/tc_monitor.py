@@ -3,16 +3,16 @@ from dash import html, dcc, callback, Input, Output, ALL
 import dash_bootstrap_components as dbc
 from datetime import datetime
 
-from utils.pressure_logic import parse_config, PressureGroup, PressureSensor
+from utils.tc_logic import parse_config, TCGroup, Thermocouple
 
 dash.register_page(
     __name__,
-    path="/pressure",
-    name="Pressure Monitor",
-    title="Pressure Monitor"
+    path="/thermo",
+    name="TC Monitor",
+    title="TC Monitor"
 )
 
-CONFIG_FILE = "utils/lists/pressure_groups.txt"
+CONFIG_FILE = "utils/lists/tc_groups.txt"
 
 _groups = parse_config(CONFIG_FILE)
 for g in _groups:
@@ -56,7 +56,7 @@ HEADER_BG = "#ffffff"
 
 # ── SENSOR CHIP ───────────────────────────────────────────────────
 
-def sensor_chip(sensor: PressureSensor, group: PressureGroup) -> html.Button:
+def sensor_chip(sensor: Thermocouple, group: TCGroup) -> html.Button:
     status  = group.sensor_status(sensor)
     bg      = STATUS_BG[status]
     txt     = STATUS_TEXT[status]
@@ -107,7 +107,7 @@ def sensor_chip(sensor: PressureSensor, group: PressureGroup) -> html.Button:
     style=chip_style)
 
 
-def avg_chip(group: PressureGroup) -> html.Div:
+def avg_chip(group: TCGroup) -> html.Div:
     proxy   = group.average_sensor()
     val_str = f"{proxy.value:.2f}" if proxy is not None else "—"
     return html.Div([
@@ -149,7 +149,7 @@ def _status_dot(status: str) -> html.Span:
     })
 
 
-def group_panel(group: PressureGroup) -> html.Div:
+def group_panel(group: TCGroup) -> html.Div:
     status       = group.status
     border_color = STATUS_COLORS.get(status, "#aaa")
 
@@ -235,12 +235,12 @@ layout = html.Div([
         rel="stylesheet",
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap"
     ),
-    dcc.Interval(id="pm-interval", interval=1000, n_intervals=0),
+    dcc.Interval(id="tc-interval", interval=1000, n_intervals=0),
 
     # Top bar
     html.Div([
         html.Div([
-            html.Span("PRESSURE MONITOR", style={
+            html.Span("TC MONITOR", style={
                 "fontSize":      "13px",
                 "fontWeight":    "800",
                 "letterSpacing": "0.12em",
@@ -250,17 +250,17 @@ layout = html.Div([
         ]),
         html.Div([
             legend(),
-            html.Span(id="pm-timestamp", style={
+            html.Span(id="tc-timestamp", style={
                 "fontSize":    "10px",
                 "color":       "#aaa",
                 "fontFamily":  "Inter, sans-serif",
                 "marginLeft":  "16px",
                 "marginRight": "12px",
             }),
-            dbc.Button("↺ Reload Config", id="pm-reload-btn",
+            dbc.Button("↺ Reload Config", id="tc-reload-btn",
                        size="sm", color="secondary", outline=True,
                        style={"fontSize": "10px", "padding": "2px 8px"}),
-            html.Span(id="pm-reload-msg", style={
+            html.Span(id="tc-reload-msg", style={
                 "fontSize":   "9px",
                 "color":      "#aaa",
                 "fontFamily": "Inter, sans-serif",
@@ -278,7 +278,7 @@ layout = html.Div([
         "boxShadow":       "0 1px 3px rgba(0,0,0,0.06)",
     }),
 
-    html.Div(id="pm-grid-container", children=[], style={"padding": "0 8px 8px 8px"}),
+    html.Div(id="tc-grid-container", children=[], style={"padding": "0 8px 8px 8px"}),
 
 ], style={
     "backgroundColor": PAGE_BG,
@@ -290,9 +290,9 @@ layout = html.Div([
 # ── CALLBACKS ─────────────────────────────────────────────────────────────
 
 @callback(
-    Output("pm-grid-container", "children"),
-    Output("pm-timestamp",      "children"),
-    Input("pm-interval",        "n_intervals"),
+    Output("tc-grid-container", "children"),
+    Output("tc-timestamp",      "children"),
+    Input("tc-interval",        "n_intervals"),
 )
 def cb_live_update(n):
     for group in _groups:
@@ -308,8 +308,8 @@ def cb_live_update(n):
 
 
 @callback(
-    Output("pm-reload-msg", "children"),
-    Input("pm-reload-btn",  "n_clicks"),
+    Output("tc-reload-msg", "children"),
+    Input("tc-reload-btn",  "n_clicks"),
     prevent_initial_call=True,
 )
 def cb_reload(n):
@@ -321,7 +321,7 @@ def cb_reload(n):
 
 
 @callback(
-    Output("pm-grid-container", "children", allow_duplicate=True),
+    Output("tc-grid-container", "children", allow_duplicate=True),
     Input({'type': 'sensor-btn', 'tag': ALL}, 'n_clicks'),
     prevent_initial_call=True,
 )

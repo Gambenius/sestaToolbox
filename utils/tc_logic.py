@@ -13,7 +13,7 @@ FROZEN_SECONDS = 5.0   # seconds without a value change → "frozen"
 # ── SENSOR ────────────────────────────────────────────────────────────────
 
 @dataclass
-class PressureSensor:
+class Thermocouple:
     tag:      str
     name:     str   = ""
     min_val:  float = 0.0
@@ -70,11 +70,11 @@ class PressureSensor:
 # ── GROUP ─────────────────────────────────────────────────────────────────
 
 @dataclass
-class PressureGroup:
+class TCGroup:
     id:        int
     name:      str
     tolerance: float                = 5.0
-    sensors:   List[PressureSensor] = field(default_factory=list)
+    sensors:   List[Thermocouple] = field(default_factory=list)
 
     def read_all(self):
         for s in self.sensors:
@@ -93,7 +93,7 @@ class PressureGroup:
         vals = self._live_vals()
         return statistics.median(vals) if vals else None
 
-    def sensor_status(self, sensor: PressureSensor) -> str:
+    def sensor_status(self, sensor: Thermocouple) -> str:
         """
         disabled - user excluded sensor from group
         frozen   - value unchanged for >= FROZEN_SECONDS
@@ -144,12 +144,12 @@ class PressureGroup:
         
         return f"med={med:.3f}  Δ={spread:.3f}  tol=±{self.tolerance}{flag}{frz}"
 
-    def average_sensor(self) -> Optional[PressureSensor]:
+    def average_sensor(self) -> Optional[Thermocouple]:
         avg = self._average()
         if avg is None or not self.sensors:
             return None
         s0           = self.sensors[0]
-        proxy        = PressureSensor(tag="AVG", name="Median",
+        proxy        = Thermocouple(tag="AVG", name="Median",
                                       min_val=s0.min_val, max_val=s0.max_val)
         proxy._value = avg
         return proxy
@@ -157,11 +157,11 @@ class PressureGroup:
 
 # ── CONFIG PARSER ─────────────────────────────────────────────────────────
 
-def parse_config(path: str) -> List[PressureGroup]:
+def parse_config(path: str) -> List[TCGroup]:
     if not os.path.exists(path):
         return []
 
-    groups: List[PressureGroup] = []
+    groups: List[TCGroup] = []
     with open(path, encoding="utf-8") as f:
         text = f.read().replace("\r\n", "\n").replace("\r", "\n")
 
@@ -202,10 +202,10 @@ def parse_config(path: str) -> List[PressureGroup]:
             tags = [t.strip() for t in mem_match.group(1).split(",") if t.strip()]
 
         sensors = [
-            PressureSensor(tag=t, name=t, min_val=min_val, max_val=max_val)
+            Thermocouple(tag=t, name=t, min_val=min_val, max_val=max_val)
             for t in tags
         ]
-        groups.append(PressureGroup(id=gid, name=gname,
+        groups.append(TCGroup(id=gid, name=gname,
                                   tolerance=tolerance, sensors=sensors))
 
     return sorted(groups, key=lambda g: g.id)
