@@ -104,6 +104,7 @@ def sensor_chip(sensor: PressureSensor, group: SensorGroup) -> html.Button:
         }),
     ], 
     id={'type': 'sensor-btn', 'tag': sensor.tag},
+    n_clicks=None, # Ensure this is None
     style=chip_style)
 
 
@@ -327,22 +328,28 @@ def cb_reload(n):
 )
 def cb_toggle_sensor(n_clicks):
     ctx = dash.callback_context
-    if not ctx.triggered or all(x is None for x in n_clicks):
+
+    # 1. HARD CHECK: Was this triggered by a property actually changing?
+    # If the value is None or 0, it's a ghost trigger from a page refresh/render
+    if not ctx.triggered or ctx.triggered[0]['value'] is None:
         return dash.no_update
-    
-    # 1. Identify which tag was clicked
-    triggered_id = json.loads(ctx.triggered[0]['prop_id'].split('.')[0])
+
+    # 2. Use triggered_id (robust for dots in tags)
+    triggered_id = dash.ctx.triggered_id
     tag_to_toggle = triggered_id['tag']
 
-    # 2. Update the Python state
+    # 3. Update the global Python state
+    found = False
     for g in _groups:
         for s in g.sensors:
             if s.tag == tag_to_toggle:
                 s.disabled = not s.disabled
+                found = True
                 break
+        if found:
+            break
     
-    # 3. FORCE REDRAW: Re-run the layout generator immediately
-    # This ensures the user sees the dashed border the moment they click
+    # 4. Immediate Redraw
     panels = [group_panel(g) for g in _groups]
     return html.Div(panels, style={
         "display":             "grid",
