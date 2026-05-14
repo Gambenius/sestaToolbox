@@ -12,6 +12,7 @@ from dash import html, dcc, callback, Input, Output, State, no_update, Patch
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import dash_ag_grid as dag
+from utils.shared_state import tag_data, active_tags, state_lock
 
 from asyncua import Client
 from asyncua import ua
@@ -45,13 +46,8 @@ OPC_NS         = 3
 TAGS_CACHE_FILE = "utils/tags_cache.txt"
 PRESETS_FILE   = "utils/quicktrends_presets.txt"
 WINDOW_SECONDS = 1200   # 20 min rolling window
-MAX_POINTS_PER_TAG = 10_000
 
 # ── SHARED STATE ───────────────────────────────────────────────────────────
-# tag_data: tag -> deque of (datetime, float)
-tag_data      = defaultdict(lambda: deque(maxlen=MAX_POINTS_PER_TAG))
-active_tags   = set()
-state_lock    = threading.Lock()
 opc_connected = False
 # NEW — load cache eagerly at import time
 cached_tags_list = []
@@ -324,7 +320,7 @@ def _get_data_for_tags(selected_tags, start_dt, n_pts=1000):
 
     return all_times, data_dict
 
-def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=12):
+def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=12, window_seconds=300):
     fig = go.Figure()
     
     # Base linewidth calculation based on font size
@@ -369,11 +365,14 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size
         "showlegend":    False,
         "annotations":   [],
         "xaxis": {
-            "title":      "Orario",
-            "tickformat": "%H:%M:%S",
-            "gridcolor":  "#eee",
-            "showspikes": True,
-        }
+                    "title":      "Orario",
+                    "tickformat": "%H:%M:%S",
+                    "gridcolor":  "#eee",
+                    "showspikes": True,
+                    "range":      [(datetime.now() - timedelta(seconds=window_seconds)).isoformat(),
+                                datetime.now().isoformat()],
+                    "autorange":  False,
+                }
     }
 
     # 3. Subplot and Annotation logic
@@ -468,7 +467,8 @@ layout = dbc.Container([
     dcc.Store(id="qt-y-ranges-store"),
     dcc.Store(id="qt-redraw-store"),
     dcc.Interval(id="qt-opc-status-interval", interval=5000,  n_intervals=0),
-    dcc.Interval(id="qt-live-interval",       interval=2000,  n_intervals=0),  # live redraw
+    dcc.Interval(id="qt-live-interval",       interval=2000,  n_intervals=0),
+    dcc.Interval(id="qt-initial-data-interval", interval=1500, n_intervals=0, max_intervals=1, disabled=True),
     dcc.Store(id="qt-opc-status",             data=False),
     dcc.Store(id="qt-last-render-store", data=0),
 
@@ -1022,20 +1022,25 @@ def cb_render_graph(n_clicks, redraw_store,
     clean_tag_list = [r["tag"] for r in current_rows]
     time_axis, data_dict = _get_data_for_tags(clean_tag_list, start_dt)
 
-    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "autoscale", "name_edit"}
+    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "name_edit", "initial_data"}
     needs_layout_rebuild = (trigger == "qt-btn-plot" or (reason in LAYOUT_REASONS and reason != "live"))
+
+    with state_lock:
+        for row in current_rows:
+            dq = tag_data.get(row["tag"], deque())
+            if dq:
+                _, val = dq[-1]
+                row["cur_val"] = f"{val:.3f}"
 
     if needs_layout_rebuild:
         ax_map = {str(a["id"]): a for a in (axis_rows or [])}
         fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
-                            font_size=int(font_size or 12))
+                    font_size=int(font_size or 12),
+                    window_seconds=seconds)
         fig.update_layout(transition={"duration": 0}, uirevision="stable")
         return fig, current_rows, datetime.now().timestamp()
 
-    # --- Legend Sync via Patch ---
-    now = datetime.now()
-    seconds = parse_mmss(...)  # you need the window value here
-    start = now - timedelta(seconds=seconds)
+    patched = Patch()
 
     now = datetime.now()
     seconds = parse_mmss(window_value or "5:00")
@@ -1053,7 +1058,7 @@ def cb_render_graph(n_clicks, redraw_store,
         patched["data"][i]["name"] = row.get("name", tag)
         patched["data"][i]["meta"] = tag
 
-    return patched, no_update, datetime.now().timestamp()
+    return patched, current_rows, datetime.now().timestamp()  # return current_rows here too
 
 @callback(
     Output("qt-info-table", "rowData", allow_duplicate=True),
@@ -1065,7 +1070,8 @@ def cb_render_graph(n_clicks, redraw_store,
 def cb_live_update_values(n, current_rows, last_render_ts):
     if not current_rows:
         return no_update
-    # Skip update if a full render happened less than 2 seconds ago
+    print(f"[DEBUG] active_tags: {active_tags}")
+    print(f"[DEBUG] tag_data keys: {list(tag_data.keys())[:5]}")
     if last_render_ts and (datetime.now().timestamp() - last_render_ts) < 2.0:
         return no_update
     new_rows = []
@@ -1412,3 +1418,23 @@ def cb_apply_window(n_submit, window_value, figure):
     patched["layout"]["xaxis"]["range"] = [start.isoformat(), now.isoformat()]
     patched["layout"]["xaxis"]["autorange"] = False
     return patched
+
+# 24. MOSTRA GRAFICO INTERVAL AUTO
+@callback(
+    Output("qt-initial-data-interval", "disabled"),
+    Output("qt-initial-data-interval", "n_intervals"),
+    Input("qt-btn-plot", "n_clicks"),
+    prevent_initial_call=True
+)
+def cb_enable_initial_interval(n):
+    return False, 0
+
+@callback(
+    Output("qt-redraw-store", "data", allow_duplicate=True),
+    Input("qt-initial-data-interval", "n_intervals"),
+    prevent_initial_call=True
+)
+def cb_initial_redraw(n):
+    if n == 0:
+        return no_update
+    return {"ts": datetime.now().isoformat(), "reason": "initial_data"}
