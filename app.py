@@ -59,7 +59,8 @@ sidebar = html.Div(
                 dbc.NavLink("Home", href="/", active="exact"),
                 dbc.NavLink("Lettore Binari", href="/wbin", active="exact"),
                 dbc.NavLink("Quicktrends", href="/quickt", active="exact"),
-                dbc.NavLink("Qualità misure", href="/pressure", active="exact"),
+                dbc.NavLink("Monitor Pressioni", href="/pressure", active="exact"),
+                dbc.NavLink("Monitor TC", href="/thermo", active="exact"),
                 dbc.NavLink("Consumi", href="/consumi", active="exact"),
                 dbc.NavLink("Segnalazioni e Bug", href="/feedback", active="exact"),
 
