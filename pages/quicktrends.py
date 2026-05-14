@@ -12,12 +12,13 @@ from dash import html, dcc, callback, Input, Output, State, no_update, Patch
 import dash_bootstrap_components as dbc
 import dash_daq as daq
 import dash_ag_grid as dag
-from utils.shared_state import tag_data, active_tags, state_lock
 
 from asyncua import Client
 from asyncua import ua
 from dotenv import load_dotenv
 load_dotenv()
+
+from utils.shared_state import tag_data, active_tags, state_lock
 
 dash.register_page(
     __name__, 
@@ -140,18 +141,15 @@ async def subscription_watcher(client, subscription, subscribed_tags):
         await asyncio.sleep(2)
 
 async def heartbeat(subscribed_tags):
-    """Stamp all active tags every second so static values still plot.
-    Skips tags that received a real update in the last 800ms."""
+    """Stamp all active tags every second so static values still plot."""
     while True:
         now = datetime.now()
         with state_lock:
             for tag in subscribed_tags:
                 dq = tag_data.get(tag)
                 if dq:
-                    last_ts, last_val = dq[-1]
-                    # Only stamp if no real update in the last 800ms
-                    if (now - last_ts).total_seconds() >= 0.8:
-                        tag_data[tag].append((now, last_val))
+                    _, last_val = dq[-1]
+                    tag_data[tag].append((now, last_val))
         await asyncio.sleep(1)
 
 async def opc_loop():
@@ -265,6 +263,10 @@ def _ax_key(aid_int):
     return "yaxis" if aid_int == 1 else f"yaxis{aid_int}"
 
 def get_tag_dataframe(selected_tags=None):
+    """
+    Returns a DataFrame [timestamp, tag, value] for the last WINDOW_SECONDS.
+    Optionally filtered to selected_tags.
+    """
     cutoff = datetime.now() - timedelta(seconds=WINDOW_SECONDS)
     rows = []
     with state_lock:
@@ -280,12 +282,6 @@ def get_tag_dataframe(selected_tags=None):
 
     df = pd.DataFrame(rows)
     df = df.sort_values("timestamp").reset_index(drop=True)
-    
-    # Round timestamps to nearest second and deduplicate, keeping last value
-    df["timestamp_s"] = df["timestamp"].dt.floor("s")
-    df = df.drop_duplicates(subset=["tag", "timestamp_s"], keep="last")
-    df = df.drop(columns="timestamp_s").reset_index(drop=True)
-    
     return df
 
 def _get_data_for_tags(selected_tags, start_dt, n_pts=1000):
@@ -320,7 +316,7 @@ def _get_data_for_tags(selected_tags, start_dt, n_pts=1000):
 
     return all_times, data_dict
 
-def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=12, window_seconds=300):
+def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size=12):
     fig = go.Figure()
     
     # Base linewidth calculation based on font size
@@ -365,14 +361,11 @@ def _build_figure(current_rows, time_axis, data_dict, ax_map, y_store, font_size
         "showlegend":    False,
         "annotations":   [],
         "xaxis": {
-                    "title":      "Orario",
-                    "tickformat": "%H:%M:%S",
-                    "gridcolor":  "#eee",
-                    "showspikes": True,
-                    "range":      [(datetime.now() - timedelta(seconds=window_seconds)).isoformat(),
-                                datetime.now().isoformat()],
-                    "autorange":  False,
-                }
+            "title":      "Orario",
+            "tickformat": "%H:%M:%S",
+            "gridcolor":  "#eee",
+            "showspikes": True,
+        }
     }
 
     # 3. Subplot and Annotation logic
@@ -471,7 +464,6 @@ layout = dbc.Container([
     dcc.Interval(id="qt-initial-data-interval", interval=1500, n_intervals=0, max_intervals=1, disabled=True),
     dcc.Store(id="qt-opc-status",             data=False),
     dcc.Store(id="qt-last-render-store", data=0),
-
 
     # Axis modal
     dbc.Modal([
@@ -953,8 +945,7 @@ def cb_live_refresh(n, info_rows):
 # ─── 11. MAIN RENDER ─────────────────────────────────────────────────────
 @callback(
     [Output("qt-main-graph", "figure"),
-     Output("qt-info-table", "rowData"),
-     Output("qt-last-render-store", "data")],
+     Output("qt-info-table", "rowData")],
     [Input("qt-btn-plot",     "n_clicks"),
      Input("qt-redraw-store", "data")],
     [State("qt-tag-dropdown",     "value"),
@@ -970,7 +961,7 @@ def cb_render_graph(n_clicks, redraw_store,
                     selected_tags, current_rows_state,
                     axis_defs, x_store, y_store, font_size, window_value):  
     if not selected_tags:
-        return go.Figure(), [], datetime.now().timestamp()
+        return go.Figure(), []
 
     ctx     = dash.callback_context
     trigger = ctx.triggered[0]["prop_id"].split(".")[0]
@@ -1022,25 +1013,20 @@ def cb_render_graph(n_clicks, redraw_store,
     clean_tag_list = [r["tag"] for r in current_rows]
     time_axis, data_dict = _get_data_for_tags(clean_tag_list, start_dt)
 
-    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "name_edit", "initial_data"}
+    LAYOUT_REASONS = {"delete", "tag_edit", "axis_sel", "color", "autoscale", "name_edit"}
     needs_layout_rebuild = (trigger == "qt-btn-plot" or (reason in LAYOUT_REASONS and reason != "live"))
-
-    with state_lock:
-        for row in current_rows:
-            dq = tag_data.get(row["tag"], deque())
-            if dq:
-                _, val = dq[-1]
-                row["cur_val"] = f"{val:.3f}"
 
     if needs_layout_rebuild:
         ax_map = {str(a["id"]): a for a in (axis_rows or [])}
         fig = _build_figure(current_rows, time_axis, data_dict, ax_map, y_store,
-                    font_size=int(font_size or 12),
-                    window_seconds=seconds)
+                            font_size=int(font_size or 12))
         fig.update_layout(transition={"duration": 0}, uirevision="stable")
-        return fig, current_rows, datetime.now().timestamp()
+        return fig, current_rows
 
-    patched = Patch()
+    # --- Legend Sync via Patch ---
+    now = datetime.now()
+    seconds = parse_mmss(...)  # you need the window value here
+    start = now - timedelta(seconds=seconds)
 
     now = datetime.now()
     seconds = parse_mmss(window_value or "5:00")
@@ -1058,21 +1044,16 @@ def cb_render_graph(n_clicks, redraw_store,
         patched["data"][i]["name"] = row.get("name", tag)
         patched["data"][i]["meta"] = tag
 
-    return patched, current_rows, datetime.now().timestamp()  # return current_rows here too
+    return patched, no_update
 
 @callback(
     Output("qt-info-table", "rowData", allow_duplicate=True),
     Input("qt-live-interval", "n_intervals"),
-    [State("qt-info-table", "rowData"),
-     State("qt-last-render-store", "data")],
+    State("qt-info-table", "rowData"),
     prevent_initial_call=True
 )
-def cb_live_update_values(n, current_rows, last_render_ts):
+def cb_live_update_values(n, current_rows):
     if not current_rows:
-        return no_update
-    print(f"[DEBUG] active_tags: {active_tags}")
-    print(f"[DEBUG] tag_data keys: {list(tag_data.keys())[:5]}")
-    if last_render_ts and (datetime.now().timestamp() - last_render_ts) < 2.0:
         return no_update
     new_rows = []
     with state_lock:
