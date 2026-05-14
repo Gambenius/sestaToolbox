@@ -58,13 +58,17 @@ sidebar = html.Div(
             [
                 dbc.NavLink("Home", href="/", active="exact"),
                 dbc.NavLink("Lettore Binari", href="/wbin", active="exact"),
-                # dbc.NavLink("Pompe Volumetriche", href="/pump-vol", active="exact"),
-                dbc.NavLink("Armadi", href="/chem", active="exact"),
+                dbc.NavLink("Quicktrends", href="/quickt", active="exact"),
+                dbc.NavLink("Qualità misure", href="/pressure", active="exact"),
                 dbc.NavLink("Consumi", href="/consumi", active="exact"),
+                dbc.NavLink("Segnalazioni e Bug", href="/feedback", active="exact"),
 
+
+                
+                # dbc.NavLink("Pompe Volumetriche", href="/pump-vol", active="exact"),
+                # dbc.NavLink("Armadi", href="/chem", active="exact"),
                 # dbc.NavLink("Mappe Pompe", href="/pump-map", active="exact"),
                 # dbc.NavLink("PySR Regressore", href="/pysr-regressor", active="exact"),
-                dbc.NavLink("Segnalazioni e Bug", href="/feedback", active="exact"),
             ],
             vertical=True,
             pills=True,
