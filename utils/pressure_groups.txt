@@ -1,8 +1,88 @@
 GROUP
 {
 ID = 1
-name = PROVA
-tolerance = 0.05
+name = 100
+tolerance = 5
 limits = (-1, 1)
 members = (P101, P102, P103, P104, P105, P106, P107, P108, P109, P110, P111, P112, P113, P114, P115, P116)
+}
+GROUP
+{
+ID = 2
+name = 200
+tolerance = 1
+limits = (-1, 1)
+members = (P201, P202, P203, P204, P205, P206, P207, P208, P209, P210, P211, P212, P213, P214, P215, P216)
+}
+GROUP
+{
+ID = 3
+name = 300
+tolerance = 2
+limits = (-1, 1)
+members = (P301, P302, P303, P304, P305, P306, P307, P308, P309, P310, P311, P312, P313, P314, P315, P316)
+}
+GROUP
+{
+ID = 4
+name = 400
+tolerance = 3
+limits = (-1, 1)
+members = (P401, P402, P403, P404, P405, P406, P407, P408, P409, P410, P411, P412, P413, P414, P415, P416)
+}
+GROUP
+{
+ID = 6
+name = 600
+tolerance = 0.05
+limits = (-1, 1)
+members = (P601, P602, P603, P604, P605, P606, P607, P608, P609, P610, P611, P612, P613, P614, P615, P616)
+}
+GROUP
+{
+ID = 7
+name = 700
+tolerance = 0.05
+limits = (-1, 1)
+members = (P701, P702, P703, P704, P705, P706, P707, P708, P709, P710, P711, P712, P713, P714, P715, P716)
+}
+GROUP
+{
+ID = 8
+name = 800
+tolerance = 0.05
+limits = (-1, 1)
+members = (P801, P802, P803, P804, P805, P806, P807, P808, P809, P810, P811, P812, P813, P814, P815, P816)
+}
+GROUP
+{
+ID = 9
+name = 900
+tolerance = 0.05
+limits = (-1, 1)
+members = (P901, P902, P903, P904, P905, P906, P907, P908, P909, P910, P911, P912, P913, P914, P915, P916)
+}
+GROUP
+{
+ID = 10
+name = 1000
+tolerance = 0.05
+limits = (-1, 1)
+members = (P1001, P1002, P1003, P1004, P1005, P1006, P1007, P1008, P1009, P1010, P1011, P1012, P1013, P1014, P1015, P1016)
+}
+GROUP
+{
+ID = 11
+name = 1100
+tolerance = 0.05
+limits = (-1, 1)
+members = (P1101, P1102, P1103, P1104, P1105, P1106, P1107, P1108, P1109, P1110, P1111, P1112, P1113, P1114, P1115, P1116)
+}
+GROUP
+{
+ID = 12
+name = 1200
+tolerance = 0.05
+limits = (-1, 1)
+members = (P1201, P1202, P1203, P1204, P1205, P1206, P1207, P1208, P1209, P1210, P1211, P1212, P1213, P1214, P1215, P1216)
 }
