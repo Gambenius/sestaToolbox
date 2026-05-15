@@ -3,7 +3,7 @@ from dash import html, dcc, callback, Input, Output, ALL
 import dash_bootstrap_components as dbc
 from datetime import datetime
 
-from utils.pressure_logic import parse_config, PressureGroup, PressureSensor
+from utils.sensor_logic import parse_config, PressureGroup, PressureSensor
 
 dash.register_page(
     __name__,

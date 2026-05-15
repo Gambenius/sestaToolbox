@@ -3,7 +3,7 @@ from dash import html, dcc, callback, Input, Output, State, ALL
 import dash_bootstrap_components as dbc
 from datetime import datetime
 
-from utils.tc_logic import parse_config, TCGroup, Thermocouple
+from utils.sensor_logic import parse_config, TCGroup, Thermocouple
 
 dash.register_page(
     __name__,
