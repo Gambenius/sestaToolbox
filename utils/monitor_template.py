@@ -2,6 +2,7 @@ import dash
 from dash import html, dcc, Input, Output, State, ALL
 import dash_bootstrap_components as dbc
 from datetime import datetime
+import os
 
 
 # ── STYLES ────────────────────────────────────────────────────────────────
@@ -135,7 +136,7 @@ def _status_dot(status: str) -> html.Span:
     })
 
 
-def _group_panel(group) -> html.Div:
+def _group_panel(group, density: int) -> html.Div:
     status       = group.status
     border_color = STATUS_COLORS.get(status, "#aaa")
 
@@ -169,7 +170,8 @@ def _group_panel(group) -> html.Div:
 
     grid = html.Div(chips, style={
         "display":             "grid",
-        "gridTemplateColumns": "repeat(4, 1fr)",
+        # Use density to determine horizontal chips
+        "gridTemplateColumns": f"repeat({density}, 1fr)",
         "gap":                 "4px",
         "padding":             "0 6px 6px 6px",
     })
@@ -217,12 +219,12 @@ def _legend() -> html.Div:
     ], style={"display": "flex", "alignItems": "center"})
 
 
-# ── GRID BUILDER (shared by callbacks) ────────────────────────────────────
+# ── GRID BUILDER ──────────────────────────────────────────────────────────
 
-def _build_grid(groups, col_count: int) -> html.Div:
-    panels = [_group_panel(g) for g in groups]
+def _build_grid(groups, density: int) -> html.Div:
+    panels = [_group_panel(g, density) for g in groups]
     return html.Div(panels, style={
-        "columnCount": str(col_count or 4),
+        "columnCount": str(density or 4),
         "columnGap":   "8px",
         "padding":     "0 8px 8px 8px",
     })
@@ -240,7 +242,6 @@ class SensorMonitor:
         for g in self.groups:
             g.activate_all()
 
-    # ids
     def _id(self, name: str) -> str:
         return f"{self.page_id}-{name}"
 
@@ -252,7 +253,7 @@ class SensorMonitor:
                 href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap"
             ),
             dcc.Interval(id=f"{p}-interval", interval=1000, n_intervals=0),
-            dcc.Store(id=f"{p}-col-width", data=4),
+            dcc.Store(id=f"{p}-density-store", data=4),
 
             # Top bar
             html.Div([
@@ -276,16 +277,22 @@ class SensorMonitor:
                     }),
                     html.Div([
                         dbc.InputGroup([
-                            dbc.Button("−", id=f"{p}-width-minus", color="secondary", outline=True, size="sm"),
-                            dbc.Input(id=f"{p}-col-width-input", type="number", value=4, min=1, step=1,
+                            dbc.Button("−", id=f"{p}-dens-minus", color="secondary", outline=True, size="sm"),
+                            dbc.Input(id=f"{p}-dens-input", type="number", value=4, min=1, step=1,
                                       debounce=True, size="sm",
                                       style={"width": "52px", "textAlign": "center"}),
-                            dbc.Button("+", id=f"{p}-width-plus", color="secondary", outline=True, size="sm"),
+                            dbc.Button("+", id=f"{p}-dens-plus", color="secondary", outline=True, size="sm"),
                         ], size="sm", style={"marginRight": "10px"}),
                     ], style={"display": "flex", "alignItems": "center", "marginRight": "10px"}),
-                    dbc.Button("↺ Reload Config", id=f"{p}-reload-btn",
+                    
+                    # --- NEW BUTTONS ---
+                    dbc.Button("✎ Edit Config", id=f"{p}-edit-btn",
+                               size="sm", color="primary", outline=True,
+                               style={"fontSize": "10px", "padding": "2px 8px", "marginRight": "5px"}),
+                    dbc.Button("↺ Reload", id=f"{p}-reload-btn",
                                size="sm", color="secondary", outline=True,
                                style={"fontSize": "10px", "padding": "2px 8px"}),
+                    
                     html.Span(id=f"{p}-reload-msg", style={
                         "fontSize":   "9px",
                         "color":      "#aaa",
@@ -306,6 +313,23 @@ class SensorMonitor:
 
             html.Div(id=f"{p}-grid-container", children=[]),
 
+            # --- TEXT EDITOR MODAL ---
+            dbc.Modal([
+                dbc.ModalHeader(dbc.ModalTitle(f"Editing: {os.path.basename(self.config_path)}")),
+                dbc.ModalBody([
+                    dcc.Textarea(
+                        id=f"{p}-config-text-area",
+                        style={"width": "100%", "height": "500px", "fontFamily": "monospace", "fontSize": "13px"},
+                        placeholder="Enter configuration here..."
+                    )
+                ]),
+                dbc.ModalFooter([
+                    html.Span(id=f"{p}-save-status", style={"marginRight": "auto", "fontSize": "11px", "color": "#27ae60"}),
+                    dbc.Button("Cancel", id=f"{p}-close-modal", color="secondary", outline=True),
+                    dbc.Button("Save & Apply", id=f"{p}-save-config", color="success"),
+                ]),
+            ], id=f"{p}-config-modal", size="xl", is_open=False),
+
         ], style={
             "backgroundColor": PAGE_BG,
             "minHeight":       "100vh",
@@ -314,18 +338,17 @@ class SensorMonitor:
 
     def register_callbacks(self):
         p      = self.page_id
-        groups = self.groups  # captured by closure; reload mutates this list in place
 
         @dash.callback(
             Output(f"{p}-grid-container", "children"),
             Output(f"{p}-timestamp",      "children"),
             Input(f"{p}-interval",        "n_intervals"),
-            Input(f"{p}-col-width",       "data"),
+            Input(f"{p}-density-store",   "data"),
         )
-        def cb_live_update(n, col_count):
+        def cb_live_update(n, density):
             for group in self.groups:
                 group.read_all()
-            return _build_grid(self.groups, col_count), datetime.now().strftime("%H:%M:%S")
+            return _build_grid(self.groups, density), datetime.now().strftime("%H:%M:%S")
 
         @dash.callback(
             Output(f"{p}-reload-msg", "children"),
@@ -339,12 +362,66 @@ class SensorMonitor:
             return f"loaded {len(self.groups)} groups · {datetime.now().strftime('%H:%M:%S')}"
 
         @dash.callback(
-            Output(f"{p}-grid-container", "children", allow_duplicate=True),
-            Input({'type': 'sensor-btn', 'tag': ALL}, 'n_clicks'),
-            State(f"{p}-col-width", "data"),
+            Output(f"{p}-density-store", "data"),
+            Output(f"{p}-dens-input",    "value"),
+            Input(f"{p}-dens-minus",     "n_clicks"),
+            Input(f"{p}-dens-plus",      "n_clicks"),
+            Input(f"{p}-dens-input",     "value"),
+            State(f"{p}-density-store",  "data"),
             prevent_initial_call=True,
         )
-        def cb_toggle_sensor(n_clicks, col_count):
+        def cb_density_control(minus, plus, input_val, current):
+            triggered = dash.ctx.triggered_id
+            if triggered == f"{p}-dens-minus":
+                val = max(1, current - 1)
+            elif triggered == f"{p}-dens-plus":
+                val = current + 1
+            else:
+                val = int(input_val) if input_val and int(input_val) >= 1 else current
+            return val, val
+
+        # --- TEXT EDITOR CALLBACKS ---
+        @dash.callback(
+            Output(f"{p}-config-modal",     "is_open"),
+            Output(f"{p}-config-text-area", "value"),
+            Output(f"{p}-save-status",      "children"),
+            Input(f"{p}-edit-btn",          "n_clicks"),
+            Input(f"{p}-close-modal",       "n_clicks"),
+            Input(f"{p}-save-config",       "n_clicks"),
+            State(f"{p}-config-text-area",  "value"),
+            prevent_initial_call=True,
+        )
+        def cb_modal_logic(n_edit, n_close, n_save, current_text):
+            triggered = dash.ctx.triggered_id
+
+            if triggered == f"{p}-edit-btn":
+                if os.path.exists(self.config_path):
+                    with open(self.config_path, "r", encoding="utf-8") as f:
+                        content = f.read()
+                    return True, content, ""
+                return True, "File not found.", ""
+
+            if triggered == f"{p}-save-config":
+                try:
+                    with open(self.config_path, "w", encoding="utf-8") as f:
+                        f.write(current_text)
+                    # Trigger internal reload of objects
+                    self.groups = self.parse_fn(self.config_path)
+                    for g in self.groups:
+                        g.activate_all()
+                    return False, dash.no_update, "Saved!"
+                except Exception as e:
+                    return True, current_text, f"Error: {str(e)}"
+
+            return False, dash.no_update, ""
+
+        @dash.callback(
+            Output(f"{p}-grid-container", "children", allow_duplicate=True),
+            Input({'type': 'sensor-btn', 'tag': ALL}, 'n_clicks'),
+            State(f"{p}-density-store", "data"),
+            prevent_initial_call=True,
+        )
+        def cb_toggle_sensor(n_clicks, density):
             ctx = dash.callback_context
             if not ctx.triggered or ctx.triggered[0]['value'] is None:
                 return dash.no_update
@@ -354,23 +431,4 @@ class SensorMonitor:
                     if s.tag == tag_to_toggle:
                         s.disabled = not s.disabled
                         break
-            return _build_grid(self.groups, col_count)
-
-        @dash.callback(
-            Output(f"{p}-col-width",       "data"),
-            Output(f"{p}-col-width-input", "value"),
-            Input(f"{p}-width-minus",      "n_clicks"),
-            Input(f"{p}-width-plus",       "n_clicks"),
-            Input(f"{p}-col-width-input",  "value"),
-            State(f"{p}-col-width",        "data"),
-            prevent_initial_call=True,
-        )
-        def cb_col_width(minus, plus, input_val, current):
-            triggered = dash.ctx.triggered_id
-            if triggered == f"{p}-width-minus":
-                val = max(1, current - 1)
-            elif triggered == f"{p}-width-plus":
-                val = current + 1
-            else:
-                val = int(input_val) if input_val and int(input_val) >= 1 else current
-            return val, val
+            return _build_grid(self.groups, density)
