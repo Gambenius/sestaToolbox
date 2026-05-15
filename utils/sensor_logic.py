@@ -135,24 +135,142 @@ class Thermocouple:
         return (datetime.now() - ref).total_seconds() >= FROZEN_SECONDS
 
 
+# ── CALCULATED CHANNEL ────────────────────────────────────────────────────
+
+@dataclass
+class CalcChannel:
+    """
+    A virtual channel whose value is computed from a formula string.
+
+    Formula rules
+    -------------
+    - Tag names follow OPC-style notation, e.g. PB_NODO_22.TC26
+      (word chars, underscores, dots — no spaces inside a tag).
+    - Operators: + - * / ( )   PEMDAS is respected via Python's eval.
+    - Numeric literals use a dot as decimal separator, e.g. 3.14
+    - Commas separate *multiple* calc expressions in the config block;
+      they are never part of a single formula.
+
+    The formula is evaluated by Python's built-in eval() on a namespace
+    that maps every tag token to its current live value.  If any required
+    tag has no data yet (None) the result is also None.
+    """
+
+    formula:  str
+    tag:      str  = field(init=False)   # display label, set post-init
+    disabled: bool = False
+
+    # tag pattern: word-chars, underscores, dots — but NOT a plain number
+    _TAG_RE: re.Pattern = field(
+        default=re.compile(r'\b([A-Za-z_][A-Za-z0-9_.]*)\b'),
+        init=False, repr=False, compare=False,
+    )
+
+    def __post_init__(self):
+        self.tag = self.formula   # show the raw formula as the chip label
+
+    # ── helpers ──────────────────────────────────────────────────────────
+
+    def _tag_names(self) -> List[str]:
+        """Return every identifier token found in the formula."""
+        return self._TAG_RE.findall(self.formula)
+
+    @staticmethod
+    def _alias(tag: str) -> str:
+        """Convert a dotted tag name to a valid Python identifier for eval."""
+        return tag.replace(".", "__DOT__")
+
+    def _resolve_namespace(self):
+        """
+        Build {alias: value} for all tag identifiers in the formula.
+        Dotted tags like PB_NODO_22.TC27 are aliased to PB_NODO_22__DOT__TC27
+        so eval can look them up as plain variable names.
+        Returns (safe_formula, ns) or (None, None) if any tag has no data.
+        """
+        from utils.shared_state import tag_data, state_lock
+
+        tags = self._tag_names()
+        ns: dict = {}
+        with state_lock:
+            for tag in tags:
+                dq: deque = tag_data.get(tag, deque())
+                if not dq:
+                    return None, None    # missing data → cannot compute
+                _, val = dq[-1]
+                if val is None:
+                    return None, None
+                ns[self._alias(tag)] = float(val)
+
+        # Rewrite formula replacing each dotted tag with its alias.
+        # Iterate longest-first so partial matches don't clobber longer ones.
+        safe_formula = self.formula
+        for tag in sorted(tags, key=len, reverse=True):
+            safe_formula = safe_formula.replace(tag, self._alias(tag))
+
+        return safe_formula, ns
+
+    # ── public API (mirrors PressureSensor / Thermocouple) ───────────────
+
+    def read(self) -> Optional[float]:
+        """Evaluate the formula against current tag values."""
+        safe_formula, ns = self._resolve_namespace()
+        if safe_formula is None:
+            self._value = None
+            return None
+        try:
+            result = eval(safe_formula, {"__builtins__": {}}, ns)  # noqa: S307
+            self._value = float(result)
+        except Exception:
+            self._value = None
+        return self._value
+
+    def activate(self):
+        """Register every referenced tag with the shared OPC subscription."""
+        from utils.shared_state import active_tags, state_lock
+
+        with state_lock:
+            for token in self._tag_names():
+                active_tags.add(token)
+
+    @property
+    def value(self) -> Optional[float]:
+        return getattr(self, "_value", None)
+
+    @property
+    def is_frozen(self) -> bool:
+        return False   # calc channels have no freeze detection
+
+    @property
+    def is_out_of_range(self) -> bool:
+        return False   # no range defined for calc channels
+
+
+CalcChannel._value = None   # default before first read()
+
+
 # ── GROUP ─────────────────────────────────────────────────────────────────
 
 @dataclass
 class PressureGroup:
-    id:        int
-    name:      str
-    tolerance: float                = 5.0
-    ah:        Optional[float]      = None   # Alarm High (Optional)
-    ahh:       Optional[float]      = None   # Alarm High High (Optional)
-    sensors:   List[PressureSensor] = field(default_factory=list)
+    id:            int
+    name:          str
+    tolerance:     float                = 5.0
+    ah:            Optional[float]      = None   # Alarm High (Optional)
+    ahh:           Optional[float]      = None   # Alarm High High (Optional)
+    sensors:       List[PressureSensor] = field(default_factory=list)
+    calc_channels: List["CalcChannel"]  = field(default_factory=list)
 
     def read_all(self):
         for s in self.sensors:
             s.read()
+        for c in self.calc_channels:
+            c.read()
 
     def activate_all(self):
         for s in self.sensors:
             s.activate()
+        for c in self.calc_channels:
+            c.activate()
 
     def _live_vals(self) -> List[float]:
         """Returns values for sensors that are not None and not disabled."""
@@ -239,20 +357,25 @@ class PressureGroup:
 
 @dataclass
 class TCGroup:
-    id:        int
-    name:      str
-    tolerance: float                = 5.0
-    ah:        Optional[float]      = None
-    ahh:       Optional[float]      = None
-    sensors:   List[Thermocouple]   = field(default_factory=list)
+    id:            int
+    name:          str
+    tolerance:     float               = 5.0
+    ah:            Optional[float]     = None
+    ahh:           Optional[float]     = None
+    sensors:       List[Thermocouple]  = field(default_factory=list)
+    calc_channels: List[CalcChannel]   = field(default_factory=list)
 
     def read_all(self):
         for s in self.sensors:
             s.read()
+        for c in self.calc_channels:
+            c.read()
 
     def activate_all(self):
         for s in self.sensors:
             s.activate()
+        for c in self.calc_channels:
+            c.activate()
 
     def _live_vals(self) -> List[float]:
         """Returns values for sensors that are not None and not disabled."""
@@ -329,6 +452,36 @@ class TCGroup:
 
 # ── CONFIG PARSER ─────────────────────────────────────────────────────────
 
+def _split_calc_formulas(raw: str) -> List[str]:
+    """
+    Split a raw calc block on commas that are NOT inside parentheses.
+    Strips whitespace and newlines from each formula.
+    Example:
+        "P101/2-P202*3,\n  PB_NODO_22.TC27*1.4 - PB_NODO_22.TC26/PB_NODO_22.TC25"
+        → ["P101/2-P202*3", "PB_NODO_22.TC27*1.4 - PB_NODO_22.TC26/PB_NODO_22.TC25"]
+    """
+    formulas: List[str] = []
+    depth = 0
+    current: List[str] = []
+    for ch in raw:
+        if ch == "(":
+            depth += 1
+            current.append(ch)
+        elif ch == ")":
+            depth -= 1
+            current.append(ch)
+        elif ch == "," and depth == 0:
+            formula = "".join(current).strip()
+            if formula:
+                formulas.append(formula)
+            current = []
+        else:
+            current.append(ch)
+    last = "".join(current).strip()
+    if last:
+        formulas.append(last)
+    return formulas
+
 def parse_pressure_config(path: str) -> List[PressureGroup]:
     if not os.path.exists(path):
         return []
@@ -388,8 +541,19 @@ def parse_pressure_config(path: str) -> List[PressureGroup]:
             PressureSensor(tag=t, name=t, min_val=min_val, max_val=max_val)
             for t in tags
         ]
-        groups.append(PressureGroup(id=gid, name=gname, tolerance=tolerance, 
-                                    ah=ah, ahh=ahh, sensors=sensors))
+
+        # ── calc channels ──────────────────────────────────────────────
+        calc_channels: List[CalcChannel] = []
+        calc_match = re.search(r'calc\s*=\s*\(([^)]*)\)', body, re.IGNORECASE | re.DOTALL)
+        if calc_match:
+            raw_formulas = calc_match.group(1)
+            # Split on commas that are NOT inside parentheses
+            formulas = _split_calc_formulas(raw_formulas)
+            calc_channels = [CalcChannel(formula=f) for f in formulas]
+
+        groups.append(PressureGroup(id=gid, name=gname, tolerance=tolerance,
+                                    ah=ah, ahh=ahh, sensors=sensors,
+                                    calc_channels=calc_channels))
 
     return sorted(groups, key=lambda g: g.id)
 
@@ -452,7 +616,17 @@ def parse_tc_config(path: str) -> List[TCGroup]:
             Thermocouple(tag=t, name=t, min_val=min_val, max_val=max_val)
             for t in tags
         ]
-        groups.append(TCGroup(id=gid, name=gname, tolerance=tolerance, 
-                              ah=ah, ahh=ahh, sensors=sensors))
 
-    return sorted(groups, key=lambda g: g.id)
+        # ── calc channels ──────────────────────────────────────────────
+        calc_channels: List[CalcChannel] = []
+        calc_match = re.search(r'calc\s*=\s*\(([^)]*)\)', body, re.IGNORECASE | re.DOTALL)
+        if calc_match:
+            raw_formulas = calc_match.group(1)
+            formulas = _split_calc_formulas(raw_formulas)
+            calc_channels = [CalcChannel(formula=f) for f in formulas]
+
+        groups.append(TCGroup(id=gid, name=gname, tolerance=tolerance,
+                              ah=ah, ahh=ahh, sensors=sensors,
+                              calc_channels=calc_channels))
+
+    return sorted(groups, key=lambda g: g.id)   

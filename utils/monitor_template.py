@@ -125,6 +125,40 @@ def _avg_chip(group) -> html.Div:
     })
 
 
+def _calc_chip(calc) -> html.Div:
+    """Chip for a CalcChannel — dark teal with dashed border to distinguish from real sensors."""
+    val_str = f"{calc.value:.2f}" if calc.value is not None else "—"
+    label   = calc.formula
+
+    CALC_BG   = "#1a5f7a"
+    CALC_TEXT = "#ffffff"
+
+    return html.Div([
+        html.Div(label, style={
+            "fontSize":     "8px",
+            "fontFamily":   "Inter, monospace, sans-serif",
+            "color":        "rgba(255,255,255,0.70)",
+            "fontWeight":   "600",
+            "lineHeight":   "1.2",
+            "overflowWrap": "anywhere",
+        }),
+        html.Div(val_str, style={
+            "fontSize":   "12px",
+            "fontFamily": "Inter, sans-serif",
+            "fontWeight": "700",
+            "color":      CALC_TEXT,
+            "lineHeight": "1",
+            "marginTop":  "3px",
+        }),
+    ], style={
+        "backgroundColor": CALC_BG,
+        "borderRadius":    "3px",
+        "padding":         "5px 6px",
+        "border":          "2px dashed rgba(255,255,255,0.35)",
+        "minWidth":        "0",
+    })
+
+
 # ── GROUP PANEL ───────────────────────────────────────────────────────────
 
 def _status_dot(status: str) -> html.Span:
@@ -170,6 +204,8 @@ def _group_panel(group, density: int) -> html.Div:
     })
 
     chips = [_avg_chip(group)] + [_sensor_chip(s, group) for s in group.sensors]
+    if hasattr(group, "calc_channels"):
+        chips += [_calc_chip(c) for c in group.calc_channels]
 
     grid = html.Div(chips, style={
         "display":             "grid",
