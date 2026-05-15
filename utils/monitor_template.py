@@ -8,8 +8,9 @@ import os
 # ── STYLES ────────────────────────────────────────────────────────────────
 STATUS_COLORS = {
     "ok":           "#27ae60",
-    "warn":         "#e67e22",
-    "alarm":        "#e74c3c",
+    "deviation":    "#f1c40f",   
+    "alarmHigh":    "#e67e22",   
+    "alarmHHigh":   "#ff0000",   
     "frozen":       "#8e44ad",
     "nodata":       "#aab0b8",
     "disabled":     "#7f8c8d",
@@ -17,8 +18,9 @@ STATUS_COLORS = {
 }
 STATUS_BG = {
     "ok":           "#27ae60",
-    "warn":         "#e67e22",
-    "alarm":        "#e74c3c",
+    "deviation":    "#f1c40f",   
+    "alarmHigh":    "#e67e22",
+    "alarmHHigh":   "#ff0000",
     "frozen":       "#8e44ad",
     "nodata":       "#d0d4d9",
     "disabled":     "#bdc3c7",
@@ -26,8 +28,9 @@ STATUS_BG = {
 }
 STATUS_TEXT = {
     "ok":           "#ffffff",
-    "warn":         "#ffffff",
-    "alarm":        "#ffffff",
+    "deviation":    "#ffffff",
+    "alarmHigh":    "#000000",
+    "alarmHHigh":   "#ffffff",
     "frozen":       "#ffffff",
     "nodata":       "#666c74",
     "disabled":     "#ffffff",
@@ -193,8 +196,9 @@ def _group_panel(group, density: int) -> html.Div:
 def _legend() -> html.Div:
     items = [
         ("ok",           "OK"),
-        ("warn",         "WARN"),
-        ("alarm",        "ALARM"),
+        ("deviation",    "DEVIATION"),
+        ("alarmHigh",    "AH"),
+        ("alarmHHigh",   "AHH"),
         ("frozen",       "FROZEN"),
         ("disabled",     "EXCLUDED"),
         ("out_of_range", "OUT OF RANGE"),

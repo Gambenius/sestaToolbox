@@ -142,6 +142,8 @@ class PressureGroup:
     id:        int
     name:      str
     tolerance: float                = 5.0
+    ah:        Optional[float]      = None   # Alarm High (Optional)
+    ahh:       Optional[float]      = None   # Alarm High High (Optional)
     sensors:   List[PressureSensor] = field(default_factory=list)
 
     def read_all(self):
@@ -163,13 +165,15 @@ class PressureGroup:
 
     def sensor_status(self, sensor: PressureSensor) -> str:
         """
-        disabled     - user excluded sensor from group
-        out_of_range - value outside given range
-        frozen       - value unchanged for >= FROZEN_SECONDS
-        alarm        - deviation from group median > tolerance
-        warn         - deviation > tolerance x 0.5
-        ok           - deviation <= tolerance x 0.5
-        nodata       - no value yet
+        Updated Priority Order:
+        1. disabled     - user excluded sensor
+        2. nodata       - no value
+        3. out_of_range - outside [min, max]
+        4. frozen       - value unchanged
+        5. alarmHHigh   - value > ahh
+        6. alarmHigh    - value > ah
+        7. deviation    - deviation from median > tolerance
+        8. ok           - deviation <= tolerance
         """
         if sensor.disabled:
             return "disabled"
@@ -180,24 +184,29 @@ class PressureGroup:
         if sensor.is_frozen:
             return "frozen"
         
+        if self.ahh is not None and sensor.value > self.ahh:
+            return "alarmHHigh"
+        if self.ah is not None and sensor.value > self.ah:
+            return "alarmHigh"
+        
         avg = self._average()
         if avg is None:
             return "nodata"
             
+        # Deviation check: removed 0.5* tolerance 'warn' logic
         dev = abs(sensor.value - avg)
         if dev > self.tolerance:
-            return "alarm"
-        if dev > self.tolerance * 0.5:
-            return "warn"
+            return "deviation"
         return "ok"
 
     @property
     def status(self) -> str:
         statuses = [self.sensor_status(s) for s in self.sensors]
-        if "alarm"         in statuses: return "alarm"
+        if "alarmHHigh"    in statuses: return "alarmHHigh"
+        if "alarmHigh"     in statuses: return "alarmHigh"
+        if "deviation"     in statuses: return "deviation"
         if "out_of_range"  in statuses: return "out_of_range"
         if "frozen"        in statuses: return "frozen"
-        if "warn"          in statuses: return "warn"
         if all(st in ["nodata", "disabled"] for st in statuses): return "nodata"
         return "ok"
 
@@ -207,12 +216,14 @@ class PressureGroup:
         if not vals:
             return "No data"
         
-        # FIXED: Use median instead of mean
         med    = self._average()
         spread = max(vals) - min(vals)
         frozen = sum(1 for s in self.sensors if s.is_frozen and not s.disabled)
-        flag   = " ⚠" if spread > self.tolerance else ""
-        frz    = f"  ❄{frozen}" if frozen else ""
+        
+        # Warning flag if spread > tolerance or if any sensor exceeds AH (if set)
+        has_high_alarm = (self.ah is not None and any(v > self.ah for v in vals))
+        flag = " ⚠" if (spread > self.tolerance or has_high_alarm) else ""
+        frz  = f"  ❄{frozen}" if frozen else ""
         
         return f"med={med:.3f}  Δ={spread:.3f}  tol=±{self.tolerance}{flag}{frz}"
 
@@ -231,7 +242,9 @@ class TCGroup:
     id:        int
     name:      str
     tolerance: float                = 5.0
-    sensors:   List[Thermocouple] = field(default_factory=list)
+    ah:        Optional[float]      = None
+    ahh:       Optional[float]      = None
+    sensors:   List[Thermocouple]   = field(default_factory=list)
 
     def read_all(self):
         for s in self.sensors:
@@ -251,15 +264,6 @@ class TCGroup:
         return statistics.median(vals) if vals else None
 
     def sensor_status(self, sensor: Thermocouple) -> str:
-        """
-        disabled     - user excluded sensor from group
-        out_of_range - value outside given range
-        frozen       - value unchanged for >= FROZEN_SECONDS
-        alarm        - deviation from group median > tolerance
-        warn         - deviation > tolerance x 0.5
-        ok           - deviation <= tolerance x 0.5
-        nodata       - no value yet
-        """
         if sensor.disabled:
             return "disabled"
         if sensor.value is None:
@@ -269,13 +273,18 @@ class TCGroup:
         if sensor.is_frozen:
             return "frozen"
         
+        if self.ahh is not None and sensor.value > self.ahh:
+            return "alarmHHigh"
+        if self.ah is not None and sensor.value > self.ah:
+            return "alarmHigh"
+        
         avg = self._average()
         if avg is None:
             return "nodata"
             
         dev = abs(sensor.value - avg)
         if dev > self.tolerance:
-            return "alarm"
+            return "deviation"
         if dev > self.tolerance * 0.5:
             return "warn"
         return "ok"
@@ -283,7 +292,9 @@ class TCGroup:
     @property
     def status(self) -> str:
         statuses = [self.sensor_status(s) for s in self.sensors]
-        if "alarm"         in statuses: return "alarm"
+        if "alarmHHigh"    in statuses: return "alarmHHigh"
+        if "alarmHigh"     in statuses: return "alarmHigh"
+        if "deviation"         in statuses: return "deviation"
         if "out_of_range"  in statuses: return "out_of_range"
         if "frozen"        in statuses: return "frozen"
         if "warn"          in statuses: return "warn"
@@ -296,12 +307,13 @@ class TCGroup:
         if not vals:
             return "No data"
         
-        # FIXED: Use median instead of mean
         med    = self._average()
         spread = max(vals) - min(vals)
         frozen = sum(1 for s in self.sensors if s.is_frozen and not s.disabled)
-        flag   = " ⚠" if spread > self.tolerance else ""
-        frz    = f"  ❄{frozen}" if frozen else ""
+        
+        has_high_alarm = (self.ah is not None and any(v > self.ah for v in vals))
+        flag = " ⚠" if (spread > self.tolerance or has_high_alarm) else ""
+        frz  = f"  ❄{frozen}" if frozen else ""
         
         return f"med={med:.3f}  Δ={spread:.3f}  tol=±{self.tolerance}{flag}{frz}"
 
@@ -333,15 +345,26 @@ def parse_pressure_config(path: str) -> List[PressureGroup]:
             continue
         body = m.group(1)
 
-        def get_val(key: str, default: str = "", _body: str = body) -> str:
-            km = re.search(rf'^\s*{key}\s*=\s*(.+)$', _body,
+        def get_val(key: str, default: Optional[str] = None, _body: str = body) -> Optional[str]:
+            # Capture non-whitespace content. If line is 'key =', it returns None.
+            km = re.search(rf'^\s*{key}\s*=\s*(.*?)\s*$', _body,
                            re.MULTILINE | re.IGNORECASE)
-            return km.group(1).strip() if km else default
+            if km:
+                val = km.group(1).strip()
+                return val if val else None
+            return default
 
         try:
             gid       = int(get_val("id",         "0"))
             gname     = get_val("name",            f"Group {gid}")
             tolerance = float(get_val("tolerance", "5"))
+            
+            # Read AH/AHH. Convert to float only if string exists.
+            ah_str    = get_val("ah")
+            ah        = float(ah_str) if ah_str else None
+            ahh_str   = get_val("ahh")
+            ahh       = float(ahh_str) if ahh_str else None
+            
         except ValueError:
             continue
 
@@ -365,8 +388,8 @@ def parse_pressure_config(path: str) -> List[PressureGroup]:
             PressureSensor(tag=t, name=t, min_val=min_val, max_val=max_val)
             for t in tags
         ]
-        groups.append(PressureGroup(id=gid, name=gname,
-                                  tolerance=tolerance, sensors=sensors))
+        groups.append(PressureGroup(id=gid, name=gname, tolerance=tolerance, 
+                                    ah=ah, ahh=ahh, sensors=sensors))
 
     return sorted(groups, key=lambda g: g.id)
 
@@ -388,15 +411,24 @@ def parse_tc_config(path: str) -> List[TCGroup]:
             continue
         body = m.group(1)
 
-        def get_val(key: str, default: str = "", _body: str = body) -> str:
-            km = re.search(rf'^\s*{key}\s*=\s*(.+)$', _body,
+        def get_val(key: str, default: Optional[str] = None, _body: str = body) -> Optional[str]:
+            km = re.search(rf'^\s*{key}\s*=\s*(.*?)\s*$', _body,
                            re.MULTILINE | re.IGNORECASE)
-            return km.group(1).strip() if km else default
+            if km:
+                val = km.group(1).strip()
+                return val if val else None
+            return default
 
         try:
             gid       = int(get_val("id",         "0"))
             gname     = get_val("name",            f"Group {gid}")
             tolerance = float(get_val("tolerance", "5"))
+            
+            ah_str    = get_val("ah")
+            ah        = float(ah_str) if ah_str else None
+            ahh_str   = get_val("ahh")
+            ahh       = float(ahh_str) if ahh_str else None
+            
         except ValueError:
             continue
 
@@ -417,10 +449,10 @@ def parse_tc_config(path: str) -> List[TCGroup]:
             tags = [t.strip() for t in mem_match.group(1).split(",") if t.strip()]
 
         sensors = [
-            PressureSensor(tag=t, name=t, min_val=min_val, max_val=max_val)
+            Thermocouple(tag=t, name=t, min_val=min_val, max_val=max_val)
             for t in tags
         ]
-        groups.append(TCGroup(id=gid, name=gname,
-                                  tolerance=tolerance, sensors=sensors))
+        groups.append(TCGroup(id=gid, name=gname, tolerance=tolerance, 
+                              ah=ah, ahh=ahh, sensors=sensors))
 
     return sorted(groups, key=lambda g: g.id)

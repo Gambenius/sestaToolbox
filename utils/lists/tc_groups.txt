@@ -1,7 +1,24 @@
 GROUP
 {
-ID = 1
+ID = 9
+name = Inner DL Liner
+tolerance = 5
+AH = 360
+AHH = 650
+limits = (0, 1260)
+members = (PB_NODO_22.TC26,
+PB_NODO_22.TC27,
+PB_NODO_22.TC28,
+PB_NODO_22.TC29,
+PB_NODO_22.TC30,
+PB_NODO_22.TC31)
+}
+
+GROUP
+{
 name = Rakes
+AH = 456
+AHH = 123
 tolerance = 5
 limits = (0, 1700)
 members = (PB_NODO_20.TC01,
@@ -19,7 +36,6 @@ PB_NODO_20.TC12)
 }
 GROUP
 {
-ID = 2
 name = Outer BL Rake
 tolerance = 5
 limits = (0, 1260)
@@ -39,7 +55,6 @@ PB_NODO_20.TC26)
 }
 GROUP
 {
-ID = 4
 name = Inner liner
 tolerance = 5
 limits = (0, 1260)
@@ -70,7 +85,6 @@ PB_NODO_22.TC11
 }
 GROUP
 {
-ID = 6
 name = Exhaust Baffle 
 tolerance = 5
 limits = (0, 1260)
@@ -98,19 +112,6 @@ members = (PB_NODO_22.TC16,
 PB_NODO_22.TC17
 
 )
-}
-GROUP
-{
-ID = 9
-name = Inner DL Liner
-tolerance = 5
-limits = (0, 1260)
-members = (PB_NODO_22.TC26,
-PB_NODO_22.TC27,
-PB_NODO_22.TC28,
-PB_NODO_22.TC29,
-PB_NODO_22.TC30,
-PB_NODO_22.TC31)
 }
 
 
