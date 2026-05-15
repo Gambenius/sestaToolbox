@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, callback, Input, Output, ALL
+from dash import html, dcc, callback, Input, Output, State, ALL
 import dash_bootstrap_components as dbc
 from datetime import datetime
 
@@ -183,7 +183,7 @@ def group_panel(group: TCGroup) -> html.Div:
 
     grid = html.Div(chips, style={
         "display":             "grid",
-        "gridTemplateColumns": "repeat(auto-fill, minmax(72px, 1fr))",
+        "gridTemplateColumns": "repeat(4, 1fr)",   # ← fixed cols, adjust to taste
         "gap":                 "4px",
         "padding":             "0 6px 6px 6px",
     })
@@ -195,6 +195,8 @@ def group_panel(group: TCGroup) -> html.Div:
         "borderRadius":    "4px",
         "overflow":        "hidden",
         "boxShadow":       "0 1px 3px rgba(0,0,0,0.06)",
+        "breakInside":     "avoid", 
+        "marginBottom":    "8px", 
     })
 
 
@@ -236,7 +238,7 @@ layout = html.Div([
         href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap"
     ),
     dcc.Interval(id="tc-interval", interval=1000, n_intervals=0),
-
+    dcc.Store(id="tc-col-width", data=4),
     # Top bar
     html.Div([
         html.Div([
@@ -257,6 +259,14 @@ layout = html.Div([
                 "marginLeft":  "16px",
                 "marginRight": "12px",
             }),
+            html.Div([
+                dbc.InputGroup([
+                    dbc.Button("−", id="tc-width-minus", color="secondary", outline=True, size="sm"),
+                    dbc.Input(id="tc-col-width-input", type="number", value=4, min=1, step=1, debounce=True,
+                            size="sm", style={"width": "52px", "textAlign": "center"}),
+                    dbc.Button("+", id="tc-width-plus", color="secondary", outline=True, size="sm"),
+                ], size="sm", style={"marginRight": "10px"}),
+            ], style={"display": "flex", "alignItems": "center", "marginRight": "10px"}),
             dbc.Button("↺ Reload Config", id="tc-reload-btn",
                        size="sm", color="secondary", outline=True,
                        style={"fontSize": "10px", "padding": "2px 8px"}),
@@ -278,7 +288,7 @@ layout = html.Div([
         "boxShadow":       "0 1px 3px rgba(0,0,0,0.06)",
     }),
 
-    html.Div(id="tc-grid-container", children=[], style={"padding": "0 8px 8px 8px"}),
+    html.Div(id="tc-grid-container", children=[]),
 
 ], style={
     "backgroundColor": PAGE_BG,
@@ -293,16 +303,17 @@ layout = html.Div([
     Output("tc-grid-container", "children"),
     Output("tc-timestamp",      "children"),
     Input("tc-interval",        "n_intervals"),
+    Input("tc-col-width",       "data"),
 )
-def cb_live_update(n):
+def cb_live_update(n, col_count):
     for group in _groups:
         group.read_all()
-    
+
     panels = [group_panel(g) for g in _groups]
     grid = html.Div(panels, style={
-        "display":             "grid",
-        "gridTemplateColumns": "repeat(auto-fill, minmax(260px, 1fr))",
-        "gap":                 "8px",
+        "columnCount": str(col_count or 4),
+        "columnGap":   "8px",
+        "padding":     "0 8px 8px 8px",
     })
     return grid, datetime.now().strftime("%H:%M:%S")
 
@@ -319,39 +330,51 @@ def cb_reload(n):
         g.activate_all()
     return f"loaded {len(_groups)} groups · {datetime.now().strftime('%H:%M:%S')}"
 
-
 @callback(
     Output("tc-grid-container", "children", allow_duplicate=True),
     Input({'type': 'sensor-btn', 'tag': ALL}, 'n_clicks'),
+    State("tc-col-width", "data"),
     prevent_initial_call=True,
 )
-def cb_toggle_sensor(n_clicks):
+def cb_toggle_sensor(n_clicks, col_count):
     ctx = dash.callback_context
-
-    # 1. HARD CHECK: Was this triggered by a property actually changing?
-    # If the value is None or 0, it's a ghost trigger from a page refresh/render
     if not ctx.triggered or ctx.triggered[0]['value'] is None:
         return dash.no_update
 
-    # 2. Use triggered_id (robust for dots in tags)
     triggered_id = dash.ctx.triggered_id
     tag_to_toggle = triggered_id['tag']
 
-    # 3. Update the global Python state
-    found = False
     for g in _groups:
         for s in g.sensors:
             if s.tag == tag_to_toggle:
                 s.disabled = not s.disabled
-                found = True
                 break
-        if found:
-            break
-    
-    # 4. Immediate Redraw
+
     panels = [group_panel(g) for g in _groups]
     return html.Div(panels, style={
-        "display":             "grid",
-        "gridTemplateColumns": "repeat(auto-fill, minmax(260px, 1fr))",
-        "gap":                 "8px",
+        "columnCount": str(col_count or 4),
+        "columnGap":   "8px",
+        "padding":     "0 8px 8px 8px",
     })
+
+
+
+# --------- change column width callback
+@callback(
+    Output("tc-col-width",       "data"),
+    Output("tc-col-width-input", "value"),
+    Input("tc-width-minus",      "n_clicks"),
+    Input("tc-width-plus",       "n_clicks"),
+    Input("tc-col-width-input",  "value"),
+    State("tc-col-width",        "data"),
+    prevent_initial_call=True,
+)
+def cb_col_width(minus, plus, input_val, current):
+    triggered = dash.ctx.triggered_id
+    if triggered == "tc-width-minus":
+        val = max(1, current - 1)
+    elif triggered == "tc-width-plus":
+        val = current + 1
+    else:
+        val = int(input_val) if input_val and int(input_val) >= 1 else current
+    return val, val
