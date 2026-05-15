@@ -163,12 +163,13 @@ class PressureGroup:
 
     def sensor_status(self, sensor: PressureSensor) -> str:
         """
-        disabled - user excluded sensor from group
-        frozen   - value unchanged for >= FROZEN_SECONDS
-        alarm    - deviation from group median > tolerance
-        warn     - deviation > tolerance x 0.5
-        ok       - deviation <= tolerance x 0.5
-        nodata   - no value yet
+        disabled     - user excluded sensor from group
+        out_of_range - value outside given range
+        frozen       - value unchanged for >= FROZEN_SECONDS
+        alarm        - deviation from group median > tolerance
+        warn         - deviation > tolerance x 0.5
+        ok           - deviation <= tolerance x 0.5
+        nodata       - no value yet
         """
         if sensor.disabled:
             return "disabled"
@@ -251,12 +252,13 @@ class TCGroup:
 
     def sensor_status(self, sensor: Thermocouple) -> str:
         """
-        disabled - user excluded sensor from group
-        frozen   - value unchanged for >= FROZEN_SECONDS
-        alarm    - deviation from group median > tolerance
-        warn     - deviation > tolerance x 0.5
-        ok       - deviation <= tolerance x 0.5
-        nodata   - no value yet
+        disabled     - user excluded sensor from group
+        out_of_range - value outside given range
+        frozen       - value unchanged for >= FROZEN_SECONDS
+        alarm        - deviation from group median > tolerance
+        warn         - deviation > tolerance x 0.5
+        ok           - deviation <= tolerance x 0.5
+        nodata       - no value yet
         """
         if sensor.disabled:
             return "disabled"
