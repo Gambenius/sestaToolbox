@@ -75,7 +75,7 @@ GROUP
 ID = 11
 name = 1100
 tolerance = 0.05
-limits = (-1, 1)
+limits = (0.5, 1)
 members = (P1101, P1102, P1103, P1104, P1105, P1106, P1107, P1108, P1109, P1110, P1111, P1112, P1113, P1114, P1115, P1116)
 }
 GROUP
@@ -83,6 +83,6 @@ GROUP
 ID = 12
 name = 1200
 tolerance = 0.05
-limits = (-1, 1)
+limits = (0.5, 1)
 members = (P1201, P1202, P1203, P1204, P1205, P1206, P1207, P1208, P1209, P1210, P1211, P1212, P1213, P1214, P1215, P1216)
 }

@@ -315,7 +315,7 @@ class TCGroup:
 
 # ── CONFIG PARSER ─────────────────────────────────────────────────────────
 
-def parse_config(path: str) -> List[PressureGroup]:
+def parse_pressure_config(path: str) -> List[PressureGroup]:
     if not os.path.exists(path):
         return []
 
@@ -364,6 +364,61 @@ def parse_config(path: str) -> List[PressureGroup]:
             for t in tags
         ]
         groups.append(PressureGroup(id=gid, name=gname,
+                                  tolerance=tolerance, sensors=sensors))
+
+    return sorted(groups, key=lambda g: g.id)
+
+
+
+def parse_tc_config(path: str) -> List[TCGroup]:
+    if not os.path.exists(path):
+        return []
+
+    groups: List[TCGroup] = []
+    with open(path, encoding="utf-8") as f:
+        text = f.read().replace("\r\n", "\n").replace("\r", "\n")
+
+    blocks = re.split(r'\bGROUP\b', text, flags=re.IGNORECASE)
+
+    for block in blocks[1:]:
+        m = re.search(r'\{(.*?)\}', block, re.DOTALL)
+        if not m:
+            continue
+        body = m.group(1)
+
+        def get_val(key: str, default: str = "", _body: str = body) -> str:
+            km = re.search(rf'^\s*{key}\s*=\s*(.+)$', _body,
+                           re.MULTILINE | re.IGNORECASE)
+            return km.group(1).strip() if km else default
+
+        try:
+            gid       = int(get_val("id",         "0"))
+            gname     = get_val("name",            f"Group {gid}")
+            tolerance = float(get_val("tolerance", "5"))
+        except ValueError:
+            continue
+
+        lim_match = re.search(r'limits\s*=\s*\(([^)]*)\)', body, re.IGNORECASE)
+        min_val, max_val = 0.0, 100.0
+        if lim_match:
+            parts = lim_match.group(1).split(",")
+            if len(parts) == 2:
+                try:
+                    min_val = float(parts[0].strip())
+                    max_val = float(parts[1].strip())
+                except ValueError:
+                    pass
+
+        mem_match = re.search(r'members\s*=\s*\(([^)]*)\)', body, re.IGNORECASE)
+        tags = []
+        if mem_match:
+            tags = [t.strip() for t in mem_match.group(1).split(",") if t.strip()]
+
+        sensors = [
+            PressureSensor(tag=t, name=t, min_val=min_val, max_val=max_val)
+            for t in tags
+        ]
+        groups.append(TCGroup(id=gid, name=gname,
                                   tolerance=tolerance, sensors=sensors))
 
     return sorted(groups, key=lambda g: g.id)
