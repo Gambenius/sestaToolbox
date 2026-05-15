@@ -55,7 +55,14 @@ class PressureSensor:
             return 0.0
         span = self.max_val - self.min_val or 1.0
         return max(0.0, min(100.0, (self._value - self.min_val) / span * 100))
-
+    
+    @property
+    def is_out_of_range(self) -> bool:
+        """True when value is outside [min_val, max_val]."""
+        if self._value is None:
+            return False
+        return self._value < self.min_val or self._value > self.max_val
+    
     @property
     def is_frozen(self) -> bool:
         """True when value hasn't changed for FROZEN_SECONDS — stuck transmitter."""
@@ -109,7 +116,14 @@ class Thermocouple:
             return 0.0
         span = self.max_val - self.min_val or 1.0
         return max(0.0, min(100.0, (self._value - self.min_val) / span * 100))
-
+    
+    @property
+    def is_out_of_range(self) -> bool:
+        """True when value is outside [min_val, max_val]."""
+        if self._value is None:
+            return False
+        return self._value < self.min_val or self._value > self.max_val
+    
     @property
     def is_frozen(self) -> bool:
         """True when value hasn't changed for FROZEN_SECONDS — stuck transmitter."""
@@ -160,6 +174,8 @@ class PressureGroup:
             return "disabled"
         if sensor.value is None:
             return "nodata"
+        if sensor.is_out_of_range:
+            return "out_of_range"
         if sensor.is_frozen:
             return "frozen"
         
@@ -177,9 +193,10 @@ class PressureGroup:
     @property
     def status(self) -> str:
         statuses = [self.sensor_status(s) for s in self.sensors]
-        if "alarm"  in statuses: return "alarm"
-        if "warn"   in statuses: return "warn"
-        if "frozen" in statuses: return "frozen"
+        if "alarm"         in statuses: return "alarm"
+        if "out_of_range"  in statuses: return "out_of_range"
+        if "frozen"        in statuses: return "frozen"
+        if "warn"          in statuses: return "warn"
         if all(st in ["nodata", "disabled"] for st in statuses): return "nodata"
         return "ok"
 
@@ -245,6 +262,8 @@ class TCGroup:
             return "disabled"
         if sensor.value is None:
             return "nodata"
+        if sensor.is_out_of_range:
+            return "out_of_range"
         if sensor.is_frozen:
             return "frozen"
         
@@ -262,9 +281,10 @@ class TCGroup:
     @property
     def status(self) -> str:
         statuses = [self.sensor_status(s) for s in self.sensors]
-        if "alarm"  in statuses: return "alarm"
-        if "warn"   in statuses: return "warn"
-        if "frozen" in statuses: return "frozen"
+        if "alarm"         in statuses: return "alarm"
+        if "out_of_range"  in statuses: return "out_of_range"
+        if "frozen"        in statuses: return "frozen"
+        if "warn"          in statuses: return "warn"
         if all(st in ["nodata", "disabled"] for st in statuses): return "nodata"
         return "ok"
 

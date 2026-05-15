@@ -26,6 +26,7 @@ STATUS_COLORS = {
     "frozen":   "#8e44ad",
     "nodata":   "#aab0b8",
     "disabled": "#7f8c8d", # Grey for excluded
+    "out_of_range": "#000000",
 }
 STATUS_BG = {
     "ok":       "#27ae60",
@@ -34,6 +35,7 @@ STATUS_BG = {
     "frozen":   "#8e44ad",
     "nodata":   "#d0d4d9",
     "disabled": "#bdc3c7", # Light grey background
+    "out_of_range": "#000000",
 }
 STATUS_TEXT = {
     "ok":       "#ffffff",
@@ -42,6 +44,7 @@ STATUS_TEXT = {
     "frozen":   "#ffffff",
     "nodata":   "#666c74",
     "disabled": "#ffffff",
+    "out_of_range": "#ffffff",
 }
 
 AVG_COLOR = "#2471a3"
@@ -209,6 +212,7 @@ def legend() -> html.Div:
         ("alarm",    "ALARM"),
         ("frozen",   "FROZEN"),
         ("disabled", "EXCLUDED"),
+        ("out_of_range", "OUT OF RANGE"),
     ]
     return html.Div([
         html.Div([
